@@ -33,7 +33,7 @@ SECRET_KEY = 'django-insecure-l=@305rm(kok9&rz2c2stlvbkto&il8)xrd4f80x4j_&y#cj9z
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,testserver").split(",")
 
 
 # Application definition
@@ -89,12 +89,28 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+
+if DB_PASSWORD:
+    # Supabase (Postgres)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv("DB_NAME", "postgres"),
+            'USER': os.getenv("DB_USER"),
+            'PASSWORD': DB_PASSWORD,
+            'HOST': os.getenv("DB_HOST"),
+            'PORT': os.getenv("DB_PORT", "5432"),
+        }
     }
-}
+else:
+    # Fallback local mientras no se configura .env con las credenciales de Supabase
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation
