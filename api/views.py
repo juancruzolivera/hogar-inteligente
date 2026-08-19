@@ -14,11 +14,15 @@ def pulso(request):
     """Recibe el POST del nodo 'El Pulso' (Cron) de n8n y avanza un dia simulado:
     corre los triggers deterministicos de cada agente y, si algo dispara, pide
     razonamiento al LLM y deja todo en el Decision Log.
+
+    Acepta opcionalmente un body con el consumo simulado de residentes en casa:
+    {"residentes_en_casa": [{"telefono": "...", "consumo_despensa": [...], "consumo_servicios": {...}}]}
+    Sin body (o con body vacio), se comporta igual que antes (baseline random).
     """
     if not secret_valido(request):
         return Response({"detail": "No autorizado."}, status=401)
 
-    logs = ejecutar_ciclo()
+    logs = ejecutar_ciclo(request.data or None)
     resumen = [
         {
             "id_agente": log.id_agente,

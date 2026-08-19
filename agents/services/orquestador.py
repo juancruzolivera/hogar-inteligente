@@ -132,12 +132,15 @@ def _procesar_mantenimiento(dia_numero: int) -> list[DecisionLog]:
     return logs
 
 
-def ejecutar_ciclo() -> list[DecisionLog]:
+def ejecutar_ciclo(payload: dict | None = None) -> list[DecisionLog]:
     """Un 'pulso': avanza 1 dia simulado (baja stock, genera consumo nuevo), corre los
     triggers deterministicos de los 3 sub-agentes y, para lo que dispare, pide
     razonamiento al LLM dejando todo asentado en el Decision Log.
+
+    `payload` es el body opcional de /api/pulso/ con el consumo simulado de los
+    residentes en casa ese dia (ver core.services.simulacion.avanzar_dia).
     """
-    estado = avanzar_dia()
+    estado = avanzar_dia(payload)
     dia = estado.dia_numero
     return (
         _procesar_despensa(dia)

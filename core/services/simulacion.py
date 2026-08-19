@@ -29,25 +29,69 @@ def _valor_dia(config: dict) -> Decimal:
     return valor.quantize(Decimal("0.01"))
 
 
-def avanzar_dia() -> EstadoSimulacion:
-    """Un 'dia simulado': baja el stock de despensa segun el consumo promedio
-    y genera una nueva lectura de consumo por servicio. Se corre una vez por Pulso,
-    antes de que los agentes evaluen el estado.
+def _consumo_despensa_por_item(residentes: list) -> dict:
+    """Suma las cantidades consumidas por todos los residentes, agrupadas por
+    nombre de item (case-insensitive), a partir del body de /api/pulso/.
+    """
+    totales: dict[str, Decimal] = {}
+    for residente in residentes:
+        for consumo in residente.get("consumo_despensa", []):
+            nombre = str(consumo.get("item", "")).strip().lower()
+            cantidad = consumo.get("cantidad")
+            if not nombre or cantidad is None:
+                continue
+            totales[nombre] = totales.get(nombre, Decimal("0")) + Decimal(str(cantidad))
+    return totales
+
+
+def _consumo_servicios_por_tipo(residentes: list) -> dict:
+    """Suma el consumo de servicios reportado por todos los residentes, agrupado
+    por tipo de servicio (AGUA/LUZ/GAS)."""
+    totales: dict[str, Decimal] = {}
+    for residente in residentes:
+        for tipo, cantidad in residente.get("consumo_servicios", {}).items():
+            tipo = str(tipo).strip().upper()
+            if cantidad is None:
+                continue
+            totales[tipo] = totales.get(tipo, Decimal("0")) + Decimal(str(cantidad))
+    return totales
+
+
+def avanzar_dia(payload: dict | None = None) -> EstadoSimulacion:
+    """Un 'dia simulado': baja el stock de despensa y genera una nueva lectura de
+    consumo por servicio. Se corre una vez por Pulso, antes de que los agentes
+    evaluen el estado.
+
+    `payload` es el body opcional de /api/pulso/, con la forma:
+    {"residentes_en_casa": [{"telefono": "...", "consumo_despensa": [{"item": "...", "cantidad": N}],
+     "consumo_servicios": {"AGUA": N, "LUZ": N, "GAS": N}}]}
+    Si un item o servicio no aparece en el payload (o no se manda payload), se usa
+    el comportamiento baseline de siempre (consumo_promedio_diario / valor random).
     """
     estado = EstadoSimulacion.actual()
     estado.avanzar_un_dia()
 
+    residentes = (payload or {}).get("residentes_en_casa", [])
+    consumo_despensa = _consumo_despensa_por_item(residentes)
+    consumo_servicios = _consumo_servicios_por_tipo(residentes)
+
     for item in ItemDespensa.objects.all():
-        nuevo_stock = item.stock_actual - item.consumo_promedio_diario
-        item.stock_actual = max(nuevo_stock, Decimal("0"))
+        consumido = consumo_despensa.get(item.nombre.strip().lower())
+        delta = consumido if consumido is not None else item.consumo_promedio_diario
+        item.stock_actual = max(item.stock_actual - delta, Decimal("0"))
         item.save(update_fields=["stock_actual", "updated_at"])
 
     momento = timezone.make_aware(datetime.combine(estado.fecha_actual, time(hour=9)))
     for tipo, config in BASELINE_CONSUMO.items():
+        valor = consumo_servicios.get(tipo)
+        if valor is None:
+            valor = _valor_dia(config)
+        else:
+            valor = valor.quantize(Decimal("0.01"))
         ConsumoLog.objects.create(
             timestamp=momento,
             tipo_servicio=tipo,
-            valor_medicion=_valor_dia(config),
+            valor_medicion=valor,
             etiqueta=f"dia_simulado_{estado.dia_numero}",
         )
 
