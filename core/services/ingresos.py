@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.utils import timezone
 
-from core.models import EstadoSimulacion, Presupuesto, Residente
+from core.models import EstadoSimulacion, IngresosHogar, Presupuesto, Residente
 
 
 def cerrar_mes(payload: dict | None = None) -> dict:
@@ -35,9 +35,13 @@ def cerrar_mes(payload: dict | None = None) -> dict:
     categorias = list(Presupuesto.objects.values_list("categoria", flat=True))
     Presupuesto.objects.update(monto_gastado=Decimal("0"), updated_at=timezone.now())
 
+    hogar = IngresosHogar.actual().recibir_ingreso(total)
+
     return {
         "mes_numero": mes_numero,
         "total_ingresos": str(total),
         "por_residente": por_residente,
         "categorias_reseteadas": categorias,
+        "saldo_disponible_hogar": str(hogar.saldo_disponible),
+        "deuda_hogar": str(hogar.deuda),
     }

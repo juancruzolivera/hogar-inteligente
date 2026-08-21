@@ -1,6 +1,14 @@
 from django.contrib import admin
 
-from core.models import ConsumoLog, Dispositivo, EstadoSimulacion, ItemDespensa, Presupuesto, Residente
+from core.models import (
+    ConsumoLog,
+    Dispositivo,
+    EstadoSimulacion,
+    IngresosHogar,
+    ItemDespensa,
+    Presupuesto,
+    Residente,
+)
 
 
 @admin.register(Residente)
@@ -31,3 +39,8 @@ class ConsumoLogAdmin(admin.ModelAdmin):
 @admin.register(EstadoSimulacion)
 class EstadoSimulacionAdmin(admin.ModelAdmin):
     list_display = ("dia_numero", "fecha_actual", "actualizado_en")
+
+
+@admin.register(IngresosHogar)
+class IngresosHogarAdmin(admin.ModelAdmin):
+    list_display = ("saldo_disponible", "actualizado_en")

@@ -3,7 +3,15 @@ from decimal import Decimal
 
 from django.utils import timezone
 
-from core.models import ConsumoLog, Dispositivo, EstadoDispositivo, Presupuesto, Residente
+from core.models import (
+    LIMITE_DEUDA,
+    ConsumoLog,
+    Dispositivo,
+    EstadoDispositivo,
+    IngresosHogar,
+    Presupuesto,
+    Residente,
+)
 from core.services.ingresos import cerrar_mes
 from core.services.simulacion import avanzar_dia
 from integrations import services as n8n
@@ -40,13 +48,15 @@ def _ya_registrado_en_dia(dia_numero: int, accion: str, **fks) -> bool:
 
 def _procesar_despensa(dia_numero: int) -> list[DecisionLog]:
     """CU-01: el agente decide por si mismo cuanto reponer, ya viendo el saldo
-    disponible de su categoria (ver agente_despensa.evaluar). No hay un veto externo:
-    lo que decide se ejecuta y descuenta del presupuesto. El chequeo de saldo real
-    (bloquear/derivar a ahorro si no alcanza) queda para el Agente de Ahorro.
+    disponible de su categoria (ver agente_despensa.evaluar). El gasto se valida
+    contra el saldo real del hogar (IngresosHogar): si la categoria es esencial y
+    no alcanza, se compra igual y la diferencia se acumula como deuda; si NO es
+    esencial y no alcanza, la compra se rechaza.
     """
     logs = []
     for item in agente_despensa.detectar_items_criticos():
-        if _ya_registrado_en_dia(dia_numero, "AGREGAR_A_LISTA_COMPRAS", item_afectado=item):
+        if _ya_registrado_en_dia(dia_numero, "AGREGAR_A_LISTA_COMPRAS", item_afectado=item) or \
+           _ya_registrado_en_dia(dia_numero, "SOLICITUD_RECHAZADA_SIN_FONDOS", item_afectado=item):
             continue
 
         presupuesto = item.presupuesto
@@ -54,8 +64,28 @@ def _procesar_despensa(dia_numero: int) -> list[DecisionLog]:
         decision = agente_despensa.evaluar(item, saldo_disponible)
         cantidad = decision.get("cantidad_sugerida")
 
-        if presupuesto and item.precio_estimado:
-            presupuesto.monto_gastado += item.precio_estimado
+        monto = item.precio_estimado
+        es_esencial = presupuesto.es_esencial if presupuesto else True
+        if monto and not IngresosHogar.actual().pagar(monto, es_esencial):
+            motivo = (
+                f"no es esencial (categoria '{presupuesto.categoria}') y no hay saldo disponible"
+                if not es_esencial
+                else f"es esencial pero financiarlo superaria el limite de deuda del hogar "
+                     f"(${LIMITE_DEUDA})"
+            )
+            logs.append(_log(
+                AgenteEnum.AGENTE_DESPENSA,
+                "SOLICITUD_RECHAZADA_SIN_FONDOS",
+                f"'{item.nombre}' {motivo}.",
+                {"item": item.nombre, "dia_simulado": dia_numero},
+                item_afectado=item,
+                presupuesto_afectado=presupuesto,
+            ))
+            n8n.enviar_whatsapp(f"⚠️ No se pudo reponer '{item.nombre}': {motivo}.")
+            continue
+
+        if presupuesto and monto:
+            presupuesto.monto_gastado += monto
             presupuesto.save(update_fields=["monto_gastado", "updated_at"])
 
         logs.append(_log(
@@ -94,16 +124,34 @@ def _procesar_consumo(dia_numero: int) -> list[DecisionLog]:
 
 
 def _procesar_mantenimiento(dia_numero: int) -> list[DecisionLog]:
-    """CU-03 (parcial): el agente decide por si mismo, viendo el saldo disponible de
-    Mantenimiento (ver agente_mantenimiento.evaluar). No hay veto externo: el service se
-    agenda siempre y descuenta del presupuesto. El deadlock/WAITING_HUMAN_APPROVAL por
-    falta de fondos queda pendiente de que el Agente de Ahorro decida cuando no alcanza.
+    """CU-03: el agente decide por si mismo, viendo el saldo disponible de
+    Mantenimiento (ver agente_mantenimiento.evaluar). Igual que en despensa, el
+    gasto se valida contra el saldo real del hogar: esencial y sin fondos -> se
+    hace igual y se acumula como deuda; no esencial y sin fondos -> se rechaza.
     """
     logs = []
     presupuesto = Presupuesto.objects.filter(categoria=CATEGORIA_MANTENIMIENTO).first()
+    es_esencial = presupuesto.es_esencial if presupuesto else True
     for dispositivo in agente_mantenimiento.detectar_dispositivos_criticos():
         saldo_disponible = presupuesto.saldo_disponible if presupuesto else None
         decision = agente_mantenimiento.evaluar(dispositivo, saldo_disponible)
+
+        if not IngresosHogar.actual().pagar(COSTO_ESTIMADO_SERVICE, es_esencial):
+            motivo = (
+                "la categoria 'Mantenimiento' no es esencial y no hay saldo disponible"
+                if not es_esencial
+                else f"es esencial pero financiarlo superaria el limite de deuda del hogar (${LIMITE_DEUDA})"
+            )
+            logs.append(_log(
+                AgenteEnum.AGENTE_MANTENIMIENTO,
+                "SOLICITUD_RECHAZADA_SIN_FONDOS",
+                f"Service de '{dispositivo.nombre}' rechazado: {motivo}.",
+                {"dispositivo": dispositivo.nombre, "dia_simulado": dia_numero},
+                dispositivo_afectado=dispositivo,
+                presupuesto_afectado=presupuesto,
+            ))
+            n8n.enviar_whatsapp(f"⚠️ No se pudo agendar el service de '{dispositivo.nombre}': {motivo}.")
+            continue
 
         dispositivo.estado_actual = EstadoDispositivo.REQUIERE_SERVICE
         dispositivo.save(update_fields=["estado_actual"])
