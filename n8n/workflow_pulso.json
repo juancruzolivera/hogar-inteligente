@@ -1,0 +1,64 @@
+{
+  "name": "El Pulso - Hogar Inteligente",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "minutes", "minutesInterval": 1 }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Cada 1 minuto = 1 dia simulado",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Pegar aca el contenido de n8n/generador_pulso.js"
+      },
+      "id": "generar-pulso",
+      "name": "Generar consumo simulado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DJANGO_BASE_URL }}/api/pulso/",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $env.N8N_WEBHOOK_SECRET }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "post-pulso",
+      "name": "POST /api/pulso/",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 300]
+    }
+  ],
+  "connections": {
+    "Cada 1 minuto = 1 dia simulado": {
+      "main": [[{ "node": "Generar consumo simulado", "type": "main", "index": 0 }]]
+    },
+    "Generar consumo simulado": {
+      "main": [[{ "node": "POST /api/pulso/", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

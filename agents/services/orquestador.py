@@ -1,15 +1,20 @@
 from datetime import timedelta
+from decimal import Decimal
 
 from django.utils import timezone
 
-from core.models import ConsumoLog, Dispositivo, EstadoDispositivo, Residente
+from core.models import ConsumoLog, Dispositivo, EstadoDispositivo, Presupuesto, Residente
+from core.services.ingresos import cerrar_mes
 from core.services.simulacion import avanzar_dia
 from integrations import services as n8n
 
-from . import agente_consumo, agente_despensa, agente_mantenimiento, agente_presupuesto
+from . import agente_consumo, agente_despensa, agente_mantenimiento
 from ..models import AgenteEnum, DecisionLog
 
 CATEGORIA_MANTENIMIENTO = "Mantenimiento"
+# Dispositivo no tiene un campo de costo propio (ver core/models.py); se usa una
+# estimacion fija por service hasta que se modele el costo real por dispositivo.
+COSTO_ESTIMADO_SERVICE = Decimal("5000")
 
 
 def _log(agente, accion, justificacion, payload=None, **fks) -> DecisionLog:
@@ -34,37 +39,35 @@ def _ya_registrado_en_dia(dia_numero: int, accion: str, **fks) -> bool:
 
 
 def _procesar_despensa(dia_numero: int) -> list[DecisionLog]:
+    """CU-01: el agente decide por si mismo cuanto reponer, ya viendo el saldo
+    disponible de su categoria (ver agente_despensa.evaluar). No hay un veto externo:
+    lo que decide se ejecuta y descuenta del presupuesto. El chequeo de saldo real
+    (bloquear/derivar a ahorro si no alcanza) queda para el Agente de Ahorro.
+    """
     logs = []
     for item in agente_despensa.detectar_items_criticos():
-        if _ya_registrado_en_dia(dia_numero, "AGREGAR_A_LISTA_COMPRAS", item_afectado=item) or \
-           _ya_registrado_en_dia(dia_numero, "SOLICITUD_RECHAZADA_SIN_FONDOS", item_afectado=item):
+        if _ya_registrado_en_dia(dia_numero, "AGREGAR_A_LISTA_COMPRAS", item_afectado=item):
             continue
-        decision = agente_despensa.evaluar(item)
-        categoria = item.presupuesto.categoria if item.presupuesto else None
-        aprobado, presupuesto = agente_presupuesto.aprobar_gasto(categoria, item.precio_estimado or 0)
 
-        if aprobado:
-            cantidad = decision.get("cantidad_sugerida")
-            logs.append(_log(
-                AgenteEnum.AGENTE_DESPENSA,
-                "AGREGAR_A_LISTA_COMPRAS",
-                decision["justificacion_tecnica"],
-                {"item": item.nombre, "cantidad_sugerida": cantidad, "dia_simulado": dia_numero},
-                item_afectado=item,
-                presupuesto_afectado=presupuesto,
-            ))
-            n8n.agregar_a_lista_compras(item.nombre, "agregar", cantidad)
-            n8n.enviar_whatsapp(f"🛒 Se agrego '{item.nombre}' ({cantidad}) a la lista de compras.")
-        else:
-            logs.append(_log(
-                AgenteEnum.AGENTE_DESPENSA,
-                "SOLICITUD_RECHAZADA_SIN_FONDOS",
-                f"Presupuesto de '{categoria}' sin saldo disponible para reponer {item.nombre}.",
-                {"item": item.nombre, "dia_simulado": dia_numero},
-                item_afectado=item,
-                presupuesto_afectado=presupuesto,
-            ))
-            n8n.enviar_whatsapp(f"⚠️ No se pudo reponer '{item.nombre}': presupuesto de '{categoria}' sin saldo.")
+        presupuesto = item.presupuesto
+        saldo_disponible = presupuesto.saldo_disponible if presupuesto else None
+        decision = agente_despensa.evaluar(item, saldo_disponible)
+        cantidad = decision.get("cantidad_sugerida")
+
+        if presupuesto and item.precio_estimado:
+            presupuesto.monto_gastado += item.precio_estimado
+            presupuesto.save(update_fields=["monto_gastado", "updated_at"])
+
+        logs.append(_log(
+            AgenteEnum.AGENTE_DESPENSA,
+            "AGREGAR_A_LISTA_COMPRAS",
+            decision["justificacion_tecnica"],
+            {"item": item.nombre, "cantidad_sugerida": cantidad, "dia_simulado": dia_numero},
+            item_afectado=item,
+            presupuesto_afectado=presupuesto,
+        ))
+        n8n.agregar_a_lista_compras(item.nombre, "agregar", cantidad)
+        n8n.enviar_whatsapp(f"🛒 Se agrego '{item.nombre}' ({cantidad}) a la lista de compras.")
     return logs
 
 
@@ -91,44 +94,35 @@ def _procesar_consumo(dia_numero: int) -> list[DecisionLog]:
 
 
 def _procesar_mantenimiento(dia_numero: int) -> list[DecisionLog]:
+    """CU-03 (parcial): el agente decide por si mismo, viendo el saldo disponible de
+    Mantenimiento (ver agente_mantenimiento.evaluar). No hay veto externo: el service se
+    agenda siempre y descuenta del presupuesto. El deadlock/WAITING_HUMAN_APPROVAL por
+    falta de fondos queda pendiente de que el Agente de Ahorro decida cuando no alcanza.
+    """
     logs = []
+    presupuesto = Presupuesto.objects.filter(categoria=CATEGORIA_MANTENIMIENTO).first()
     for dispositivo in agente_mantenimiento.detectar_dispositivos_criticos():
-        decision = agente_mantenimiento.evaluar(dispositivo)
-        aprobado, presupuesto = agente_presupuesto.tiene_saldo_disponible(CATEGORIA_MANTENIMIENTO)
+        saldo_disponible = presupuesto.saldo_disponible if presupuesto else None
+        decision = agente_mantenimiento.evaluar(dispositivo, saldo_disponible)
 
-        if aprobado:
-            dispositivo.estado_actual = EstadoDispositivo.REQUIERE_SERVICE
-            dispositivo.save(update_fields=["estado_actual"])
-            logs.append(_log(
-                AgenteEnum.AGENTE_MANTENIMIENTO,
-                "AGENDAR_SERVICE",
-                decision["justificacion_tecnica"],
-                {"dispositivo": dispositivo.nombre, "dia_simulado": dia_numero},
-                dispositivo_afectado=dispositivo,
-                presupuesto_afectado=presupuesto,
-            ))
-            fecha = (timezone.localdate() + timedelta(days=2)).isoformat()
-            n8n.agendar_evento(dispositivo.nombre, fecha, "Service de mantenimiento")
-            n8n.enviar_whatsapp(f"🔧 Se agendo un service para '{dispositivo.nombre}'.")
-        else:
-            # CU-03: deadlock estructural. Queda esperando aprobacion manual del residente.
-            dispositivo.estado_actual = EstadoDispositivo.WAITING_HUMAN_APPROVAL
-            dispositivo.save(update_fields=["estado_actual"])
-            mensaje = (
-                f"Deadlock: {dispositivo.nombre} (prioridad {dispositivo.prioridad}) requiere "
-                f"service critico pero el presupuesto de '{CATEGORIA_MANTENIMIENTO}' tiene saldo 0."
-            )
-            logs.append(_log(
-                AgenteEnum.ORQUESTADOR,
-                "WAITING_HUMAN_APPROVAL",
-                mensaje,
-                {"dispositivo": dispositivo.nombre, "dia_simulado": dia_numero},
-                dispositivo_afectado=dispositivo,
-                presupuesto_afectado=presupuesto,
-            ))
-            n8n.enviar_whatsapp(
-                f"⛔ {mensaje} Responde 'Forzar arreglo' si queres autorizar el gasto igual."
-            )
+        dispositivo.estado_actual = EstadoDispositivo.REQUIERE_SERVICE
+        dispositivo.save(update_fields=["estado_actual"])
+
+        if presupuesto:
+            presupuesto.monto_gastado += COSTO_ESTIMADO_SERVICE
+            presupuesto.save(update_fields=["monto_gastado", "updated_at"])
+
+        logs.append(_log(
+            AgenteEnum.AGENTE_MANTENIMIENTO,
+            "AGENDAR_SERVICE",
+            decision["justificacion_tecnica"],
+            {"dispositivo": dispositivo.nombre, "dia_simulado": dia_numero},
+            dispositivo_afectado=dispositivo,
+            presupuesto_afectado=presupuesto,
+        ))
+        fecha = (timezone.localdate() + timedelta(days=2)).isoformat()
+        n8n.agendar_evento(dispositivo.nombre, fecha, "Service de mantenimiento")
+        n8n.enviar_whatsapp(f"🔧 Se agendo un service para '{dispositivo.nombre}'.")
     return logs
 
 
@@ -147,6 +141,24 @@ def ejecutar_ciclo(payload: dict | None = None) -> list[DecisionLog]:
         + _procesar_consumo(dia)
         + _procesar_mantenimiento(dia)
     )
+
+
+def procesar_cierre_mes(payload: dict | None = None) -> DecisionLog:
+    """Punto de entrada de /api/ingresos/: cierre de mes disparado por el segundo
+    Schedule Trigger de n8n (cada 30 dias simulados). Suma ingresos y renueva el
+    presupuesto (ver core.services.ingresos.cerrar_mes).
+    """
+    resumen = cerrar_mes(payload)
+    justificacion = (
+        f"Cierre de mes simulado #{resumen['mes_numero']}: ingresaron ${resumen['total_ingresos']} "
+        f"entre {len(resumen['por_residente'])} residente(s). Se reinicia monto_gastado en "
+        f"{len(resumen['categorias_reseteadas'])} categoria(s) de presupuesto."
+    )
+    log = _log(AgenteEnum.ORQUESTADOR, "CIERRE_DE_MES", justificacion, resumen)
+    n8n.enviar_whatsapp(
+        f"💰 Cierre de mes: ingresaron ${resumen['total_ingresos']}. Los presupuestos se renovaron."
+    )
+    return log
 
 
 def _resolver_forzar_arreglo(residente: Residente, mensaje: str) -> DecisionLog | None:

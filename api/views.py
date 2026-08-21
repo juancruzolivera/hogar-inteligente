@@ -2,7 +2,7 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from agents.services.orquestador import ejecutar_ciclo, procesar_comando_manual
+from agents.services.orquestador import ejecutar_ciclo, procesar_cierre_mes, procesar_comando_manual
 
 from .auth import secret_valido
 
@@ -32,6 +32,32 @@ def pulso(request):
         for log in logs
     ]
     return Response({"decisiones": resumen, "total": len(resumen)}, status=200)
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def ingresos(request):
+    """Recibe el POST del segundo Schedule Trigger de n8n (cada 30 dias simulados =
+    1 mes) y cierra el mes: suma ingresos y renueva el presupuesto.
+
+    Acepta opcionalmente un body con los ingresos de cada residente ese mes:
+    {"ingresos": [{"telefono": "...", "monto": N}]}
+    Un residente que no aparece en el body cae al fallback `ingreso_mensual` cargado
+    en su fila (0 por defecto: sin body, no entra plata).
+    """
+    if not secret_valido(request):
+        return Response({"detail": "No autorizado."}, status=401)
+
+    log = procesar_cierre_mes(request.data or None)
+    return Response(
+        {
+            "accion_tomada": log.accion_tomada,
+            "justificacion_tecnica": log.justificacion_tecnica,
+            "detalles": log.detalles_payload,
+        },
+        status=200,
+    )
 
 
 @api_view(["POST"])

@@ -9,7 +9,8 @@ UMBRAL_DEGRADACION = 90  # % de vida util consumida para considerar el service c
 SYSTEM_PROMPT = """Sos el Agente de Mantenimiento de un sistema de hogar inteligente (SofIA).
 Se te informa un electrodomestico cuya degradacion estimada supero el umbral critico.
 Redacta una justificacion tecnica breve (1-2 frases, en espanol) para agendar el service,
-mencionando la prioridad del dispositivo y hace cuanto no recibe mantenimiento.
+mencionando la prioridad del dispositivo, hace cuanto no recibe mantenimiento, y el saldo
+disponible en el presupuesto de Mantenimiento.
 
 Respondes SIEMPRE con un JSON de esta forma exacta, sin texto adicional:
 {"justificacion_tecnica": "<texto>"}
@@ -47,11 +48,12 @@ def detectar_dispositivos_criticos():
     return criticos
 
 
-def evaluar(dispositivo: Dispositivo) -> dict:
+def evaluar(dispositivo: Dispositivo, saldo_disponible=None) -> dict:
     contexto = {
         "dispositivo": dispositivo.nombre,
         "prioridad": dispositivo.prioridad,
         "fecha_ultimo_service": dispositivo.fecha_ultimo_service,
         "degradacion_estimada_pct": calcular_degradacion(dispositivo),
+        "saldo_disponible_categoria": saldo_disponible,
     }
     return pedir_decision_json(SYSTEM_PROMPT, contexto)

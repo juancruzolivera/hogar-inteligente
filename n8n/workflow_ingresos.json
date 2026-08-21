@@ -1,0 +1,64 @@
+{
+  "name": "Cierre de Mes - Hogar Inteligente",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "minutes", "minutesInterval": 30 }
+          ]
+        }
+      },
+      "id": "schedule-trigger-mes",
+      "name": "Cada 30 minutos = 1 mes simulado",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [260, 500]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Pegar aca el contenido de n8n/generador_ingresos.js"
+      },
+      "id": "generar-ingresos",
+      "name": "Generar ingresos del mes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DJANGO_BASE_URL }}/api/ingresos/",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Webhook-Secret", "value": "={{ $env.N8N_WEBHOOK_SECRET }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "post-ingresos",
+      "name": "POST /api/ingresos/",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 500]
+    }
+  ],
+  "connections": {
+    "Cada 30 minutos = 1 mes simulado": {
+      "main": [[{ "node": "Generar ingresos del mes", "type": "main", "index": 0 }]]
+    },
+    "Generar ingresos del mes": {
+      "main": [[{ "node": "POST /api/ingresos/", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}
