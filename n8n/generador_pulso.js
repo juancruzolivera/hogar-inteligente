@@ -79,7 +79,7 @@ const CATALOGO_DESPENSA = {
 const RESIDENTES = [
   {
     nombre: "Carla",
-    telefono: "+5491122334455",
+    telefono: "+5491112345678",
     arquetipo: "home_office",
     // Pasa mucho tiempo en casa: consume de todo, alto en cafe/mate/te.
     habitos_despensa: [
@@ -104,7 +104,7 @@ const RESIDENTES = [
   },
   {
     nombre: "Julian",
-    telefono: "+5491133445566",
+    telefono: "+5491122223333",
     arquetipo: "oficina_9_18",
     // Menos tiempo en casa: come mas simple (pan, huevos), limpieza moderada.
     habitos_despensa: [
@@ -129,7 +129,7 @@ const RESIDENTES = [
   },
   {
     nombre: "Sofia (invitada)",
-    telefono: "+5491144556677",
+    telefono: "+5491144445555",
     arquetipo: "estudiante",
     // Invitada: consume un poco de todo, en general menos que los otros dos.
     habitos_despensa: [
@@ -157,7 +157,7 @@ const RESIDENTES = [
 // Dejar en `null` para simulacion 100% organica (solo arquetipos + azar).
 const ESCENARIO = null;
 // const ESCENARIO = { forzar_servicios: { AGUA: 25 } };            // fuga de agua -> dispara CU-02
-// const ESCENARIO = { excluir_residentes: ["+5491122334455"] };    // Carla de viaje esta semana
+// const ESCENARIO = { excluir_residentes: ["+5491112345678"] };    // Carla de viaje esta semana
 // const ESCENARIO = { multiplicador_global: 3 };                   // "junta en casa": todos consumen mas
 
 // ============================================================================

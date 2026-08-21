@@ -12,6 +12,23 @@ Van por separado a propósito: el trigger de ingresos no depende del `dia_numero
 simulación, así que puede desincronizarse si el Pulso se pausa o se reintenta — tenerlo en
 cuenta si algún día el reset de presupuesto no coincide con el día 30/60/90 exacto.
 
+## Los 3 residentes reales (Supabase) vs. los nombres "de fantasía" en n8n
+
+`RESIDENTES` en `generador_pulso.js` y `generador_ingresos.js` usa nombres amigables (Carla,
+Julian, Sofia) para que los motivos que redacta la IA suenen naturales, pero el campo
+`telefono` de cada uno tiene que ser EXACTO al de la tabla `residente` en Supabase — si no
+matchea, `/api/ingresos/` no le suma el monto a nadie (da `total_ingresos: 0` sin avisar) y
+`/api/comando/` no reconoce al residente. El mapeo actual:
+
+| n8n (nombre ficticio) | Supabase (`residente.nombre`) | `telefono` |
+|---|---|---|
+| Carla | Administrador Hogar | `+5491112345678` |
+| Julian | Co-residente | `+5491122223333` |
+| Sofia (invitada) | Visita Frecuente | `+5491144445555` |
+
+Si en algún momento cambian los residentes reales en Supabase (otros teléfonos, más o menos
+gente), hay que actualizar el `telefono` en los dos archivos para que sigan matcheando.
+
 ## Importar
 
 1. En n8n: Workflows > Import from File > `workflow_pulso.json` y `workflow_ingresos.json`.
@@ -108,8 +125,8 @@ POST /api/pulso/
 {
   "residentes_en_casa": [
     {
-      "telefono": "+5491122334455",
-      "consumo_despensa": [{ "item": "Leche", "cantidad": 0.5 }],
+      "telefono": "+5491112345678",
+      "consumo_despensa": [{ "item": "Leche Entera 1L", "cantidad": 0.5 }],
       "consumo_servicios": { "AGUA": 3.2, "LUZ": 1.1 }
     }
   ]
@@ -123,7 +140,7 @@ Un ítem o servicio que no aparece en el body cae al comportamiento baseline de 
 POST /api/ingresos/
 {
   "ingresos": [
-    { "telefono": "+5491122334455", "monto": 420000 }
+    { "telefono": "+5491112345678", "monto": 420000 }
   ]
 }
 ```

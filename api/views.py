@@ -22,6 +22,12 @@ def pulso(request):
     if not secret_valido(request):
         return Response({"detail": "No autorizado."}, status=401)
 
+    if request.data and not isinstance(request.data, dict):
+        return Response(
+            {"detail": "El body tiene que ser un objeto: {\"residentes_en_casa\": [...]}."},
+            status=400,
+        )
+
     logs = ejecutar_ciclo(request.data or None)
     resumen = [
         {
@@ -49,6 +55,12 @@ def ingresos(request):
     """
     if not secret_valido(request):
         return Response({"detail": "No autorizado."}, status=401)
+
+    if request.data and not isinstance(request.data, dict):
+        return Response(
+            {"detail": "El body tiene que ser un objeto: {\"ingresos\": [...]}."},
+            status=400,
+        )
 
     log = procesar_cierre_mes(request.data or None)
     return Response(
