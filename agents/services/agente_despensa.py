@@ -10,11 +10,18 @@ y redactar una justificacion tecnica breve (1-2 frases, en espanol) basada en el
 actual, el consumo promedio diario, la unidad de medida del producto, la fecha de
 vencimiento si existe, y el saldo disponible en el presupuesto de la categoria. Vos tomas
 la decision final: si el saldo es bajo o no alcanza para el precio estimado, ajusta la
-cantidad sugerida a la baja (la minima cantidad razonable) en vez de ignorar el saldo,
+cantidad a reponer a la baja (la minima cantidad razonable) en vez de ignorar el saldo,
 pero la decision es tuya.
 
+Importante: la cantidad a reponer tiene que dejar el stock resultante (stock_actual +
+cantidad_reponer) CLARAMENTE por encima de stock_minimo, no apenas igual o un poco arriba
+-- si repone justo al minimo, el producto vuelve a quedar critico casi de inmediato. Como
+referencia, apuntá a cubrir stock_minimo mas entre 5 y 7 dias de consumo_promedio_diario de
+margen, salvo que el saldo disponible no alcance (ahi priorizá el saldo por sobre el margen).
+
 Respondes SIEMPRE con un JSON de esta forma exacta, sin texto adicional:
-{"cantidad_sugerida": "<texto legible con la unidad correcta, ej. '2L' o '3 unidades' o '0.5kg'>",
+{"cantidad_reponer": <numero, en la unidad_medida del producto, ej. 2 o 0.5>,
+ "cantidad_sugerida": "<el mismo numero pero en texto legible con la unidad, ej. '2L' o '0.5kg'>",
  "justificacion_tecnica": "<texto>"}
 """
 

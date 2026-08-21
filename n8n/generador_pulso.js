@@ -234,14 +234,66 @@ const body = generarPulso(RESIDENTES, ARQUETIPOS, CATALOGO_DESPENSA, ESCENARIO, 
 // ----- openai_request: el body completo para el nodo HTTP Request "Evento
 // inesperado (IA)" que sigue en el workflow. Se arma aca (no en el nodo HTTP)
 // para no tener que escapar un prompt largo dentro del JSON del workflow.
-const SYSTEM_PROMPT_EVENTO = `Sos un generador de eventos inesperados para la simulacion de un hogar inteligente (SofIA). Se te informa el dia de la semana simulado (0=domingo..6=sabado), la lista de residentes de la casa (nombre, telefono, arquetipo de personalidad), el catalogo de items de despensa conocidos por el sistema con su unidad de medida, y un campo "hay_evento_forzado" (true o false) YA DECIDIDO por el sistema fuera de tu control. Tu unico trabajo es: copiar ese valor tal cual en tu campo "hay_evento" de la respuesta, y si es true, inventar el contenido del evento -- una compra o consumo que no es parte de la rutina normal de nadie, con un motivo breve y creible. No decidas vos si hay evento o no, eso ya viene resuelto. Cuando hay_evento_forzado es true, variá el tipo cada vez (no repitas siempre lo mismo entre llamadas distintas): a veces una visita que sube el consumo de agua o luz, a veces alguien compra algo puntual que no es su habito, a veces un gasto de emergencia; y elegi un residente distinto cada vez que puedas, no siempre el mismo. Si el evento involucra un producto de despensa, usa exactamente uno de los nombres del catalogo (respetando su unidad de medida al elegir la cantidad) para que efectivamente impacte el stock; si es otra cosa (una visita, un gasto de streaming, etc.), consumo_despensa puede quedar vacio y el evento se refleja solo en el motivo y/o en consumo_servicios. Respondes SIEMPRE con un JSON de esta forma exacta, sin texto adicional: {"hay_evento": true o false, "telefono": "<telefono de un residente de la lista, o null si hay_evento es false>", "consumo_despensa": [{"item": "<nombre exacto del catalogo>", "cantidad": <numero en la unidad de ese item>}], "consumo_servicios": {"AGUA": <numero opcional>, "LUZ": <numero opcional>, "GAS": <numero opcional>}, "motivo": "<1 frase breve en espanol, o null si hay_evento es false>"}. Si hay_evento es false, consumo_despensa tiene que ser un array vacio y consumo_servicios un objeto vacio.`;
+const SYSTEM_PROMPT_EVENTO = `Sos un generador de eventos inesperados para la simulacion de un hogar inteligente (SofIA). Se te informa "hay_evento_forzado" (true o false, siempre uno de los dos, nunca null) y, cuando es true, tambien "categoria_forzada", "residente_forzado", "escenario_forzado", y segun la categoria "item_forzado" o "rango_monto_ocio" -- TODO YA DECIDIDO por el sistema fuera de tu control, no lo cambies ni inventes un escenario distinto. Tu unico trabajo es copiar hay_evento_forzado tal cual en "hay_evento" (boolean exacto, nunca null ni string), y si es true, redactar el motivo especifico y elegir cantidades/montos concretos y creibles PARA ESE escenario ya decidido -- no elijas vos el residente, la categoria, el escenario, ni (cuando viene dado) el producto.
 
-// La probabilidad se decide aca (JS), no le pedimos al LLM que "adivine" un
-// porcentaje - es mas preciso y mas barato (no gasta tokens de mas intentando
-// calibrar una frecuencia via prompt). El LLM solo rellena el contenido cuando
-// PROB_EVENTO_INESPERADO dice que si.
+Que completar segun categoria_forzada:
+- "sociales": escenario_forzado ya describe el tipo de junta. Completa consumo_servicios (agua y/o luz, un poco por encima de lo normal) y, si item_forzado viene dado, agregalo a consumo_despensa con una cantidad razonable para ese escenario.
+- "compras_puntuales" / "imprevistos": item_forzado ya es el producto exacto a usar (viene del catalogo). Completa consumo_despensa con ESE item y una cantidad mayor a lo habitual, coherente con escenario_forzado.
+- "ocio": rango_monto_ocio ya es el rango de precio [minimo, maximo] para escenario_forzado. Elegi un monto_ocio DENTRO de ese rango. consumo_despensa y consumo_servicios quedan vacios.
+
+El motivo tiene que mencionar el escenario_forzado con tus propias palabras (no lo copies literal), sonando natural. Nunca repitas la misma redaccion exacta entre llamadas.
+
+Respondes SIEMPRE con un JSON de esta forma exacta, sin texto adicional: {"hay_evento": true o false, "telefono": "<telefono de residente_forzado si hay_evento es true, o null si es false>", "consumo_despensa": [{"item": "<nombre exacto del catalogo>", "cantidad": <numero en la unidad de ese item>}], "consumo_servicios": {"AGUA": <numero opcional>, "LUZ": <numero opcional>, "GAS": <numero opcional>}, "monto_ocio": <numero en pesos dentro de rango_monto_ocio si categoria_forzada es "ocio", o null en cualquier otro caso>, "motivo": "<1 frase breve en espanol, o null si hay_evento es false>"}. Si hay_evento es false, consumo_despensa tiene que ser un array vacio, consumo_servicios un objeto vacio, y monto_ocio null.`;
+
+// La probabilidad, la categoria, el residente, el escenario concreto y (cuando
+// aplica) el producto/rango de monto se deciden ACA (JS) -- no le pedimos al
+// LLM que "elija" nada de eso. Se probo dejarselo a la IA con solo una lista de
+// categorias sugeridas y quedo sesgada siempre a la misma respuesta ("reunion
+// con amigos y compra de cafe", 0 eventos de Ocio en 10 intentos). Forzando
+// hasta el escenario especifico, el LLM solo redacta texto y numeros dentro de
+// un molde ya armado -- mucho mas confiable.
 const PROB_EVENTO_INESPERADO = 0.2; // ~1 de cada 5 pulsos
+const DETALLE_EVENTO = {
+  sociales: ["visita sorpresa de un amigo", "junta de amigos en casa", "asado familiar", "alguien se quedo a dormir", "festejo de cumpleanos"],
+  compras_puntuales: ["antojo fuera de la rutina", "se termino antes de lo esperado y hay que reponerlo urgente", "aprovecharon una oferta y compraron de mas"],
+  imprevistos: ["se rompio o derramo un producto y hay que reponerlo", "una visita medica genero gasto en articulos del hogar", "un electrodomestico personal fallo y hubo que reponer algo"],
+  ocio: [
+    { escenario: "salida al cine", rango_monto: [2000, 4500] },
+    { escenario: "salida a comer afuera (bar o restaurante)", rango_monto: [5000, 15000] },
+    { escenario: "suscripcion nueva de streaming/entretenimiento", rango_monto: [1500, 3500] },
+    { escenario: "evento o salida de fin de semana", rango_monto: [8000, 20000] },
+  ],
+};
+
 const hayEventoForzado = Math.random() < PROB_EVENTO_INESPERADO;
+const categoriaForzada = hayEventoForzado
+  ? Object.keys(DETALLE_EVENTO)[Math.floor(Math.random() * Object.keys(DETALLE_EVENTO).length)]
+  : null;
+const residenteForzado = hayEventoForzado
+  ? RESIDENTES[Math.floor(Math.random() * RESIDENTES.length)]
+  : null;
+
+let escenarioForzado = null;
+let itemForzado = null;
+let rangoMontoOcio = null;
+if (hayEventoForzado) {
+  if (categoriaForzada === "ocio") {
+    const opcion = DETALLE_EVENTO.ocio[Math.floor(Math.random() * DETALLE_EVENTO.ocio.length)];
+    escenarioForzado = opcion.escenario;
+    rangoMontoOcio = opcion.rango_monto;
+  } else {
+    const opciones = DETALLE_EVENTO[categoriaForzada];
+    escenarioForzado = opciones[Math.floor(Math.random() * opciones.length)];
+  }
+  if (categoriaForzada === "compras_puntuales" || categoriaForzada === "imprevistos") {
+    const nombresCatalogo = Object.keys(CATALOGO_DESPENSA);
+    itemForzado = nombresCatalogo[Math.floor(Math.random() * nombresCatalogo.length)];
+  } else if (categoriaForzada === "sociales" && Math.random() < 0.5) {
+    // La mitad de las juntas sociales tambien involucran comprar algo puntual.
+    const nombresCatalogo = Object.keys(CATALOGO_DESPENSA);
+    itemForzado = nombresCatalogo[Math.floor(Math.random() * nombresCatalogo.length)];
+  }
+}
 
 const openai_request = {
   model: "gpt-4o-mini",
@@ -253,8 +305,14 @@ const openai_request = {
       role: "user",
       content: JSON.stringify({
         hay_evento_forzado: hayEventoForzado,
+        categoria_forzada: categoriaForzada,
+        residente_forzado: residenteForzado
+          ? { nombre: residenteForzado.nombre, telefono: residenteForzado.telefono, arquetipo: residenteForzado.arquetipo }
+          : null,
+        escenario_forzado: escenarioForzado,
+        item_forzado: itemForzado,
+        rango_monto_ocio: rangoMontoOcio,
         dia_semana: diaSemana,
-        residentes: RESIDENTES.map((r) => ({ nombre: r.nombre, telefono: r.telefono, arquetipo: r.arquetipo })),
         catalogo_despensa: Object.entries(CATALOGO_DESPENSA).map(([nombre, info]) => ({
           nombre,
           unidad: info.unidad,

@@ -57,7 +57,7 @@ def _consumo_servicios_por_tipo(residentes: list) -> dict:
     return totales
 
 
-def avanzar_dia(payload: dict | None = None) -> EstadoSimulacion:
+def avanzar_dia(payload: dict | None = None) -> tuple[EstadoSimulacion, dict]:
     """Un 'dia simulado': baja el stock de despensa y genera una nueva lectura de
     consumo por servicio. Se corre una vez por Pulso, antes de que los agentes
     evaluen el estado.
@@ -67,6 +67,10 @@ def avanzar_dia(payload: dict | None = None) -> EstadoSimulacion:
      "consumo_servicios": {"AGUA": N, "LUZ": N, "GAS": N}}]}
     Si un item o servicio no aparece en el payload (o no se manda payload), se usa
     el comportamiento baseline de siempre (consumo_promedio_diario / valor random).
+
+    Devuelve (estado, consumo_dia) -- consumo_dia es {tipo_servicio: valor_medicion}
+    del dia que se acaba de generar, para que el orquestador pueda facturarlo
+    (ver agents/services/orquestador.py::_procesar_factura_servicios).
     """
     estado = EstadoSimulacion.actual()
     estado.avanzar_un_dia()
@@ -81,6 +85,7 @@ def avanzar_dia(payload: dict | None = None) -> EstadoSimulacion:
         item.stock_actual = max(item.stock_actual - delta, Decimal("0"))
         item.save(update_fields=["stock_actual", "updated_at"])
 
+    consumo_dia: dict = {}
     momento = timezone.make_aware(datetime.combine(estado.fecha_actual, time(hour=9)))
     for tipo, config in BASELINE_CONSUMO.items():
         valor = consumo_servicios.get(tipo)
@@ -94,5 +99,6 @@ def avanzar_dia(payload: dict | None = None) -> EstadoSimulacion:
             valor_medicion=valor,
             etiqueta=f"dia_simulado_{estado.dia_numero}",
         )
+        consumo_dia[tipo] = valor
 
-    return estado
+    return estado, consumo_dia

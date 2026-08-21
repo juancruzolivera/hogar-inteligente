@@ -32,6 +32,9 @@ if (evento.hay_evento && evento.telefono) {
   for (const [tipo, cantidad] of Object.entries(evento.consumo_servicios ?? {})) {
     residente.consumo_servicios[tipo] = (residente.consumo_servicios[tipo] ?? 0) + cantidad;
   }
+  if (evento.monto_ocio) {
+    residente.gasto_ocio = { monto: evento.monto_ocio, motivo: evento.motivo };
+  }
 }
 
 return [{ json: base }];

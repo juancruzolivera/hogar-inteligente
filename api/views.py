@@ -28,6 +28,7 @@ def pulso(request):
             "id_agente": log.id_agente,
             "accion_tomada": log.accion_tomada,
             "justificacion_tecnica": log.justificacion_tecnica,
+            "detalles": log.detalles_payload,
         }
         for log in logs
     ]

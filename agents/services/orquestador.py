@@ -11,6 +11,7 @@ from core.models import (
     IngresosHogar,
     Presupuesto,
     Residente,
+    TipoServicio,
 )
 from core.services.ingresos import cerrar_mes
 from core.services.simulacion import avanzar_dia
@@ -20,9 +21,19 @@ from . import agente_consumo, agente_despensa, agente_mantenimiento
 from ..models import AgenteEnum, DecisionLog
 
 CATEGORIA_MANTENIMIENTO = "Mantenimiento"
+CATEGORIA_SERVICIOS = "Servicios"
+CATEGORIA_OCIO = "Ocio"
 # Dispositivo no tiene un campo de costo propio (ver core/models.py); se usa una
 # estimacion fija por service hasta que se modele el costo real por dispositivo.
 COSTO_ESTIMADO_SERVICE = Decimal("5000")
+# Precio por unidad de cada servicio (pesos), para convertir el consumo fisico
+# diario (litros/kWh/m3) en una factura real. Calibrados para que un mes de
+# consumo baseline ronde el limite_mensual actual de la categoria Servicios.
+PRECIO_SERVICIOS = {
+    TipoServicio.AGUA: Decimal("100"),
+    TipoServicio.LUZ: Decimal("250"),
+    TipoServicio.GAS: Decimal("100"),
+}
 
 
 def _log(agente, accion, justificacion, payload=None, **fks) -> DecisionLog:
@@ -63,6 +74,7 @@ def _procesar_despensa(dia_numero: int) -> list[DecisionLog]:
         saldo_disponible = presupuesto.saldo_disponible if presupuesto else None
         decision = agente_despensa.evaluar(item, saldo_disponible)
         cantidad = decision.get("cantidad_sugerida")
+        cantidad_reponer = decision.get("cantidad_reponer")
 
         monto = item.precio_estimado
         es_esencial = presupuesto.es_esencial if presupuesto else True
@@ -88,6 +100,10 @@ def _procesar_despensa(dia_numero: int) -> list[DecisionLog]:
             presupuesto.monto_gastado += monto
             presupuesto.save(update_fields=["monto_gastado", "updated_at"])
 
+        if cantidad_reponer:
+            item.stock_actual += Decimal(str(cantidad_reponer))
+            item.save(update_fields=["stock_actual", "updated_at"])
+
         logs.append(_log(
             AgenteEnum.AGENTE_DESPENSA,
             "AGREGAR_A_LISTA_COMPRAS",
@@ -98,6 +114,99 @@ def _procesar_despensa(dia_numero: int) -> list[DecisionLog]:
         ))
         n8n.agregar_a_lista_compras(item.nombre, "agregar", cantidad)
         n8n.enviar_whatsapp(f"🛒 Se agrego '{item.nombre}' ({cantidad}) a la lista de compras.")
+    return logs
+
+
+def _procesar_factura_servicios(dia_numero: int, consumo_dia: dict) -> list[DecisionLog]:
+    """Convierte el consumo fisico del dia (agua/luz/gas, ya generado por
+    avanzar_dia) en una factura real, cobrada contra el presupuesto de Servicios.
+    A diferencia de despensa/mantenimiento, este cargo no depende de que un LLM
+    "decida" comprar algo: los servicios se pagan siempre que se consumen, todos
+    los dias, de forma automatica y deterministica.
+    """
+    presupuesto = Presupuesto.objects.filter(categoria=CATEGORIA_SERVICIOS).first()
+    es_esencial = presupuesto.es_esencial if presupuesto else True
+
+    total = Decimal("0")
+    detalle = {}
+    for tipo, valor in consumo_dia.items():
+        precio = PRECIO_SERVICIOS.get(tipo)
+        if not precio:
+            continue
+        monto = (valor * precio).quantize(Decimal("0.01"))
+        total += monto
+        detalle[tipo] = {"consumo": str(valor), "monto": str(monto)}
+
+    if total <= 0:
+        return []
+
+    if not IngresosHogar.actual().pagar(total, es_esencial):
+        log = _log(
+            AgenteEnum.AGENTE_CONSUMO,
+            "FACTURA_SERVICIOS_SIN_FONDOS",
+            f"La factura de servicios del dia (${total}) no se pudo cubrir: la categoria "
+            f"'{CATEGORIA_SERVICIOS}' superaria el limite de deuda del hogar (${LIMITE_DEUDA}).",
+            {"detalle": detalle, "dia_simulado": dia_numero},
+            presupuesto_afectado=presupuesto,
+        )
+        n8n.enviar_whatsapp(f"⚠️ No se pudo cubrir la factura de servicios de hoy (${total}).")
+        return [log]
+
+    if presupuesto:
+        presupuesto.monto_gastado += total
+        presupuesto.save(update_fields=["monto_gastado", "updated_at"])
+
+    log = _log(
+        AgenteEnum.AGENTE_CONSUMO,
+        "FACTURA_SERVICIOS",
+        f"Consumo del dia facturado: ${total} (agua/luz/gas segun tarifa vigente).",
+        {"detalle": detalle, "dia_simulado": dia_numero},
+        presupuesto_afectado=presupuesto,
+    )
+    return [log]
+
+
+def _procesar_ocio(payload: dict | None, dia_numero: int) -> list[DecisionLog]:
+    """Gastos de ocio declarados en el body de /api/pulso/ (hoy, via el 'evento
+    inesperado' que genera la IA del lado de n8n -- ver n8n/generador_pulso.js).
+    Ocio no es esencial: si no hay saldo disponible en el hogar, el gasto se
+    rechaza directamente (no se acumula como deuda, a diferencia de las
+    categorias esenciales).
+    """
+    logs = []
+    presupuesto = Presupuesto.objects.filter(categoria=CATEGORIA_OCIO).first()
+    for residente in (payload or {}).get("residentes_en_casa", []):
+        gasto = residente.get("gasto_ocio")
+        if not gasto or not gasto.get("monto"):
+            continue
+
+        monto = Decimal(str(gasto["monto"]))
+        motivo = gasto.get("motivo") or "Gasto de ocio"
+        telefono = residente.get("telefono")
+
+        if not IngresosHogar.actual().pagar(monto, es_esencial=False):
+            logs.append(_log(
+                AgenteEnum.ORQUESTADOR,
+                "GASTO_OCIO_RECHAZADO",
+                f'Gasto de ocio ("{motivo}", ${monto}) rechazado: la categoria "{CATEGORIA_OCIO}" '
+                f"no es esencial y no hay saldo disponible en el hogar.",
+                {"telefono": telefono, "motivo": motivo, "dia_simulado": dia_numero},
+                presupuesto_afectado=presupuesto,
+            ))
+            n8n.enviar_whatsapp(f'⚠️ No se pudo cubrir un gasto de ocio ("{motivo}"): sin saldo.')
+            continue
+
+        if presupuesto:
+            presupuesto.monto_gastado += monto
+            presupuesto.save(update_fields=["monto_gastado", "updated_at"])
+
+        logs.append(_log(
+            AgenteEnum.ORQUESTADOR,
+            "GASTO_OCIO",
+            f'Gasto de ocio: "{motivo}" (${monto}).',
+            {"telefono": telefono, "motivo": motivo, "monto": str(monto), "dia_simulado": dia_numero},
+            presupuesto_afectado=presupuesto,
+        ))
     return logs
 
 
@@ -176,18 +285,20 @@ def _procesar_mantenimiento(dia_numero: int) -> list[DecisionLog]:
 
 def ejecutar_ciclo(payload: dict | None = None) -> list[DecisionLog]:
     """Un 'pulso': avanza 1 dia simulado (baja stock, genera consumo nuevo), corre los
-    triggers deterministicos de los 3 sub-agentes y, para lo que dispare, pide
+    triggers deterministicos de los sub-agentes y, para lo que dispare, pide
     razonamiento al LLM dejando todo asentado en el Decision Log.
 
     `payload` es el body opcional de /api/pulso/ con el consumo simulado de los
     residentes en casa ese dia (ver core.services.simulacion.avanzar_dia).
     """
-    estado = avanzar_dia(payload)
+    estado, consumo_dia = avanzar_dia(payload)
     dia = estado.dia_numero
     return (
         _procesar_despensa(dia)
         + _procesar_consumo(dia)
         + _procesar_mantenimiento(dia)
+        + _procesar_factura_servicios(dia, consumo_dia)
+        + _procesar_ocio(payload, dia)
     )
 
 
