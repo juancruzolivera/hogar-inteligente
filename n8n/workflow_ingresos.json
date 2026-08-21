@@ -24,7 +24,41 @@
       "name": "Generar ingresos del mes",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [520, 500]
+      "position": [480, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.OPENAI_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.openai_request) }}",
+        "options": {}
+      },
+      "id": "openai-evento-ingresos",
+      "name": "Ingreso inesperado (IA)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 500]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Pegar aca el contenido de n8n/combinar_evento_ingresos.js"
+      },
+      "id": "combinar-evento-ingresos",
+      "name": "Combinar ingreso inesperado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 500]
     },
     {
       "parameters": {
@@ -47,7 +81,7 @@
       "name": "POST /api/ingresos/",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [780, 500]
+      "position": [1140, 500]
     }
   ],
   "connections": {
@@ -55,6 +89,12 @@
       "main": [[{ "node": "Generar ingresos del mes", "type": "main", "index": 0 }]]
     },
     "Generar ingresos del mes": {
+      "main": [[{ "node": "Ingreso inesperado (IA)", "type": "main", "index": 0 }]]
+    },
+    "Ingreso inesperado (IA)": {
+      "main": [[{ "node": "Combinar ingreso inesperado", "type": "main", "index": 0 }]]
+    },
+    "Combinar ingreso inesperado": {
       "main": [[{ "node": "POST /api/ingresos/", "type": "main", "index": 0 }]]
     }
   },

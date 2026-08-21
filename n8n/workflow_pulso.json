@@ -24,7 +24,41 @@
       "name": "Generar consumo simulado",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [520, 300]
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.OPENAI_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.openai_request) }}",
+        "options": {}
+      },
+      "id": "openai-evento-pulso",
+      "name": "Evento inesperado (IA)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Pegar aca el contenido de n8n/combinar_evento_pulso.js"
+      },
+      "id": "combinar-evento-pulso",
+      "name": "Combinar evento con el body base",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 300]
     },
     {
       "parameters": {
@@ -47,7 +81,7 @@
       "name": "POST /api/pulso/",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [780, 300]
+      "position": [1140, 300]
     }
   ],
   "connections": {
@@ -55,6 +89,12 @@
       "main": [[{ "node": "Generar consumo simulado", "type": "main", "index": 0 }]]
     },
     "Generar consumo simulado": {
+      "main": [[{ "node": "Evento inesperado (IA)", "type": "main", "index": 0 }]]
+    },
+    "Evento inesperado (IA)": {
+      "main": [[{ "node": "Combinar evento con el body base", "type": "main", "index": 0 }]]
+    },
+    "Combinar evento con el body base": {
       "main": [[{ "node": "POST /api/pulso/", "type": "main", "index": 0 }]]
     }
   },

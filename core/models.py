@@ -65,6 +65,7 @@ class Presupuesto(models.Model):
 class ItemDespensa(models.Model):
     id_item = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     nombre = models.CharField(max_length=255)
+    unidad_medida = models.CharField(max_length=20, blank=True, default="")
     stock_actual = models.DecimalField(max_digits=12, decimal_places=2)
     stock_minimo = models.DecimalField(max_digits=12, decimal_places=2)
     consumo_promedio_diario = models.DecimalField(max_digits=12, decimal_places=2)
