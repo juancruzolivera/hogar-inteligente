@@ -9,6 +9,7 @@ class AgenteEnum(models.TextChoices):
     AGENTE_CONSUMO = "AGENTE_CONSUMO"
     AGENTE_PRESUPUESTO = "AGENTE_PRESUPUESTO"
     AGENTE_MANTENIMIENTO = "AGENTE_MANTENIMIENTO"
+    AGENTE_AHORRO = "AGENTE_AHORRO"
 
 
 class DecisionLog(models.Model):

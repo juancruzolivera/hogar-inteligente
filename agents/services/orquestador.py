@@ -80,7 +80,7 @@ def _procesar_despensa(dia_numero: int) -> list[DecisionLog]:
         es_esencial = presupuesto.es_esencial if presupuesto else True
         if monto and not IngresosHogar.actual().pagar(monto, es_esencial):
             motivo = (
-                f"no es esencial (categoria '{presupuesto.categoria}') y no hay saldo disponible"
+                f"no es esencial (categoria '{presupuesto.categoria}') y no hay saldo ni ahorros"
                 if not es_esencial
                 else f"es esencial pero financiarlo superaria el limite de deuda del hogar "
                      f"(${LIMITE_DEUDA})"
@@ -169,7 +169,7 @@ def _procesar_factura_servicios(dia_numero: int, consumo_dia: dict) -> list[Deci
 def _procesar_ocio(payload: dict | None, dia_numero: int) -> list[DecisionLog]:
     """Gastos de ocio declarados en el body de /api/pulso/ (hoy, via el 'evento
     inesperado' que genera la IA del lado de n8n -- ver n8n/generador_pulso.js).
-    Ocio no es esencial: si no hay saldo disponible en el hogar, el gasto se
+    Ocio no es esencial: si no hay saldo ni ahorros en el hogar, el gasto se
     rechaza directamente (no se acumula como deuda, a diferencia de las
     categorias esenciales).
     """
@@ -189,11 +189,11 @@ def _procesar_ocio(payload: dict | None, dia_numero: int) -> list[DecisionLog]:
                 AgenteEnum.ORQUESTADOR,
                 "GASTO_OCIO_RECHAZADO",
                 f'Gasto de ocio ("{motivo}", ${monto}) rechazado: la categoria "{CATEGORIA_OCIO}" '
-                f"no es esencial y no hay saldo disponible en el hogar.",
+                f"no es esencial y no hay saldo ni ahorros disponibles en el hogar.",
                 {"telefono": telefono, "motivo": motivo, "dia_simulado": dia_numero},
                 presupuesto_afectado=presupuesto,
             ))
-            n8n.enviar_whatsapp(f'⚠️ No se pudo cubrir un gasto de ocio ("{motivo}"): sin saldo.')
+            n8n.enviar_whatsapp(f'⚠️ No se pudo cubrir un gasto de ocio ("{motivo}"): sin saldo ni ahorros.')
             continue
 
         if presupuesto:
@@ -247,7 +247,7 @@ def _procesar_mantenimiento(dia_numero: int) -> list[DecisionLog]:
 
         if not IngresosHogar.actual().pagar(COSTO_ESTIMADO_SERVICE, es_esencial):
             motivo = (
-                "la categoria 'Mantenimiento' no es esencial y no hay saldo disponible"
+                "la categoria 'Mantenimiento' no es esencial y no hay saldo ni ahorros"
                 if not es_esencial
                 else f"es esencial pero financiarlo superaria el limite de deuda del hogar (${LIMITE_DEUDA})"
             )
@@ -310,12 +310,16 @@ def procesar_cierre_mes(payload: dict | None = None) -> DecisionLog:
     resumen = cerrar_mes(payload)
     justificacion = (
         f"Cierre de mes simulado #{resumen['mes_numero']}: ingresaron ${resumen['total_ingresos']} "
-        f"entre {len(resumen['por_residente'])} residente(s). Se reinicia monto_gastado en "
-        f"{len(resumen['categorias_reseteadas'])} categoria(s) de presupuesto."
+        f"entre {len(resumen['por_residente'])} residente(s). Se barrio "
+        f"${resumen['ahorrado_del_mes_anterior']} de saldo sobrante a ahorros (acumulado: "
+        f"${resumen['ahorros_hogar']}) y se cancelaron ${resumen['deuda_cancelada']} de deuda. "
+        f"Se reinicia monto_gastado en {len(resumen['categorias_reseteadas'])} "
+        f"categoria(s) de presupuesto."
     )
     log = _log(AgenteEnum.ORQUESTADOR, "CIERRE_DE_MES", justificacion, resumen)
     n8n.enviar_whatsapp(
-        f"💰 Cierre de mes: ingresaron ${resumen['total_ingresos']}. Los presupuestos se renovaron."
+        f"💰 Cierre de mes: ingresaron ${resumen['total_ingresos']}. "
+        f"Ahorros del hogar: ${resumen['ahorros_hogar']}. Los presupuestos se renovaron."
     )
     return log
 
