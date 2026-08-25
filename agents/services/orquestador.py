@@ -8,7 +8,9 @@ from core.models import (
     ConsumoLog,
     Dispositivo,
     EstadoDispositivo,
+    EstadoSimulacion,
     IngresosHogar,
+    ItemDespensa,
     Presupuesto,
     Residente,
     TipoServicio,
@@ -17,7 +19,7 @@ from core.services.ingresos import cerrar_mes
 from core.services.simulacion import avanzar_dia
 from integrations import services as n8n
 
-from . import agente_consumo, agente_despensa, agente_mantenimiento
+from . import agente_ahorro, agente_consumo, agente_despensa, agente_mantenimiento
 from ..models import AgenteEnum, DecisionLog
 
 CATEGORIA_MANTENIMIENTO = "Mantenimiento"
@@ -26,6 +28,9 @@ CATEGORIA_OCIO = "Ocio"
 # Dispositivo no tiene un campo de costo propio (ver core/models.py); se usa una
 # estimacion fija por service hasta que se modele el costo real por dispositivo.
 COSTO_ESTIMADO_SERVICE = Decimal("5000")
+# Prioridad con la que entra un dispositivo comprado por gusto. La base exige
+# entre 1 y 5 (CHECK), y 1 es la mas urgente: un capricho va al fondo de la cola.
+PRIORIDAD_GUSTO = 5
 # Precio por unidad de cada servicio (pesos), para convertir el consumo fisico
 # diario (litros/kWh/m3) en una factura real. Calibrados para que un mes de
 # consumo baseline ronde el limite_mensual actual de la categoria Servicios.
@@ -411,3 +416,109 @@ def procesar_comando_manual(telefono: str, mensaje: str) -> DecisionLog | None:
 
     n8n.enviar_whatsapp(f"{residente.nombre}: no reconozco ese comando.")
     return None
+
+
+def _dar_de_alta_compra(decision: dict) -> tuple[ItemDespensa | None, Dispositivo | None]:
+    """Suma la compra aprobada al inventario del hogar, marcada como gusto para que
+    quede fuera de los ciclos automaticos: un capricho no se repone solo ni se le
+    agenda service (ver sql/agente_ahorro.sql y las guardas en agente_despensa y
+    agente_mantenimiento).
+
+    Devuelve (item, dispositivo): uno de los dos viene cargado y el otro en None,
+    segun como haya clasificado el agente.
+    """
+    nombre = (decision.get("producto") or "Compra sin nombre").strip()[:255]
+
+    if decision.get("tipo") == "dispositivo":
+        dispositivo = Dispositivo.objects.create(
+            nombre=nombre,
+            prioridad=PRIORIDAD_GUSTO,
+            # Recien comprado: el "hoy" de la simulacion cuenta como su ultimo
+            # service. Igual no se usa, porque calcular_degradacion corta antes
+            # por gustos.
+            fecha_ultimo_service=EstadoSimulacion.actual().fecha_actual,
+            vida_util_estimada=None,
+            estado_actual=EstadoDispositivo.OPERATIVO,
+            gustos=True,
+        )
+        return None, dispositivo
+
+    item = ItemDespensa.objects.create(
+        nombre=nombre,
+        unidad_medida="unidades",
+        stock_actual=Decimal("1"),
+        stock_minimo=None,
+        # Es NOT NULL en la base y avanzar_dia() se lo resta a TODOS los items
+        # cada dia. En 0, el antojo queda registrado sin consumirse ni reponerse
+        # solo; poner un consumo inventado seria fabricar un dato que nadie dio.
+        consumo_promedio_diario=Decimal("0"),
+        precio_estimado=decision["precio"],
+        gustos=True,
+    )
+    return item, None
+
+
+def procesar_consulta_compra(telegram_id, mensaje: str) -> dict:
+    """Punto de entrada de /api/consulta/: un residente pregunta por Telegram si
+    conviene una compra.
+
+    Devuelve un dict que la view serializa tal cual. `respuesta` es el texto que
+    n8n manda de vuelta al chat, asi el residente lo lee en el mismo hilo donde
+    pregunto (por eso este flujo no usa un webhook saliente).
+    """
+    try:
+        residente = Residente.objects.get(telegram_id=telegram_id)
+    except (Residente.DoesNotExist, ValueError, TypeError):
+        return {
+            "procesado": False,
+            "resultado": "RESIDENTE_DESCONOCIDO",
+            "respuesta": "No reconozco esta cuenta de Telegram, no puedo responder consultas.",
+        }
+
+    decision = agente_ahorro.evaluar(mensaje)
+    resultado = decision["resultado"]
+    respuesta = decision["justificacion_tecnica"]
+    payload = {
+        "consulta": mensaje,
+        "producto": decision.get("producto"),
+        "precio": str(decision["precio"]) if decision.get("precio") is not None else None,
+        "tipo": decision.get("tipo"),
+        "situacion": decision.get("situacion"),
+    }
+
+    # Falta el precio: no se evalua nada y no se mueve plata, pero queda asentado
+    # que el agente contesto.
+    if resultado == agente_ahorro.CONSULTA_INCOMPLETA:
+        _log(AgenteEnum.AGENTE_AHORRO, resultado, respuesta, payload,
+             residente_autorizador=residente)
+        return {"procesado": True, "resultado": resultado, "respuesta": respuesta, **payload}
+
+    if resultado == agente_ahorro.COMPRA_RECHAZADA:
+        _log(AgenteEnum.AGENTE_AHORRO, resultado, respuesta, payload,
+             residente_autorizador=residente)
+        return {"procesado": True, "resultado": resultado, "respuesta": respuesta, **payload}
+
+    # Aprobada: recien aca se toca la plata. El contexto que uso el agente se
+    # calculo unos segundos antes, asi que el saldo pudo cambiar en el medio (un
+    # Pulso que corrio y cobro la factura del dia, por ejemplo). pagar() es la
+    # unica fuente de verdad: si dice que no, la compra no se hace.
+    precio = decision["precio"]
+    if not IngresosHogar.actual().pagar(precio, es_esencial=False):
+        respuesta = (
+            f"Te habia dicho que si, pero cuando fui a pagar la plata ya no alcanzaba "
+            f"(algun gasto entro en el medio). '{decision.get('producto')}' queda para mas adelante."
+        )
+        _log(AgenteEnum.AGENTE_AHORRO, agente_ahorro.COMPRA_RECHAZADA, respuesta,
+             {**payload, "motivo": "sin fondos al momento de pagar"},
+             residente_autorizador=residente)
+        n8n.enviar_whatsapp(f"⚠️ No se pudo cerrar la compra de '{decision.get('producto')}': sin fondos.")
+        return {"procesado": True, "resultado": agente_ahorro.COMPRA_RECHAZADA,
+                "respuesta": respuesta, **payload}
+
+    item, dispositivo = _dar_de_alta_compra(decision)
+    _log(AgenteEnum.AGENTE_AHORRO, resultado, respuesta, payload,
+         residente_autorizador=residente, item_afectado=item, dispositivo_afectado=dispositivo)
+    n8n.enviar_whatsapp(
+        f"🛍️ {residente.nombre} compro '{decision.get('producto')}' (${precio}). {respuesta}"
+    )
+    return {"procesado": True, "resultado": resultado, "respuesta": respuesta, **payload}
