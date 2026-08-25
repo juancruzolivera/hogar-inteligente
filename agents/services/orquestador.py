@@ -28,9 +28,11 @@ CATEGORIA_OCIO = "Ocio"
 # Dispositivo no tiene un campo de costo propio (ver core/models.py); se usa una
 # estimacion fija por service hasta que se modele el costo real por dispositivo.
 COSTO_ESTIMADO_SERVICE = Decimal("5000")
-# Prioridad con la que entra un dispositivo comprado por gusto. La base exige
-# entre 1 y 5 (CHECK), y 1 es la mas urgente: un capricho va al fondo de la cola.
+# Prioridad con la que entra un dispositivo comprado. La base exige entre 1 y 5
+# (CHECK) y 1 es la mas urgente: un capricho va al fondo de la cola, y un bien de
+# uso nuevo al medio (no sabemos si es critico como la heladera).
 PRIORIDAD_GUSTO = 5
+PRIORIDAD_BIEN_DE_USO = 3
 # Precio por unidad de cada servicio (pesos), para convertir el consumo fisico
 # diario (litros/kWh/m3) en una factura real. Calibrados para que un mes de
 # consumo baseline ronde el limite_mensual actual de la categoria Servicios.
@@ -418,44 +420,65 @@ def procesar_comando_manual(telefono: str, mensaje: str) -> DecisionLog | None:
     return None
 
 
-def _dar_de_alta_compra(decision: dict) -> tuple[ItemDespensa | None, Dispositivo | None]:
-    """Suma la compra aprobada al inventario del hogar, marcada como gusto para que
-    quede fuera de los ciclos automaticos: un capricho no se repone solo ni se le
-    agenda service (ver sql/agente_ahorro.sql y las guardas en agente_despensa y
-    agente_mantenimiento).
+def _dar_de_alta_compra(decision: dict) -> tuple:
+    """Suma la compra aprobada al inventario del hogar.
 
-    Devuelve (item, dispositivo): uno de los dos viene cargado y el otro en None,
-    segun como haya clasificado el agente.
+    Busca por nombre antes de crear, porque `nombre` NO es unico en ninguna de las
+    dos tablas y una fila duplicada rompe cosas: `avanzar_dia()` matchea los items
+    por nombre en minusculas, asi que dos "Leche Entera 1L" reciben cada una el
+    consumo completo del dia (consumo doble) y las dos se reponen.
+
+    - Item que ya existe -> reposicion: se le suma al stock.
+    - Dispositivo que ya existe -> reemplazo: vuelve a arrancar su degradacion y
+      conserva la `vida_util_estimada` que ya tenia (no hay que estimar nada).
+    - No existe -> alta, con `gustos` y los parametros operativos que decidio el
+      agente (ver agente_ahorro._sanear_parametros).
+
+    Devuelve (item, dispositivo, accion) con accion en {alta, reposicion, reemplazo}.
     """
     nombre = (decision.get("producto") or "Compra sin nombre").strip()[:255]
+    params = decision.get("parametros") or {}
+    es_gusto = bool(params.get("es_gusto", decision.get("es_gusto")))
+    cantidad = Decimal(str(params.get("cantidad") or 1))
 
     if decision.get("tipo") == "dispositivo":
+        existente = Dispositivo.objects.filter(nombre__iexact=nombre).first()
+        if existente:
+            existente.fecha_ultimo_service = EstadoSimulacion.actual().fecha_actual
+            existente.estado_actual = EstadoDispositivo.OPERATIVO
+            existente.save(
+                update_fields=["fecha_ultimo_service", "estado_actual", "updated_at"]
+            )
+            return None, existente, "reemplazo"
+
         dispositivo = Dispositivo.objects.create(
             nombre=nombre,
-            prioridad=PRIORIDAD_GUSTO,
-            # Recien comprado: el "hoy" de la simulacion cuenta como su ultimo
-            # service. Igual no se usa, porque calcular_degradacion corta antes
-            # por gustos.
+            prioridad=PRIORIDAD_GUSTO if es_gusto else PRIORIDAD_BIEN_DE_USO,
             fecha_ultimo_service=EstadoSimulacion.actual().fecha_actual,
-            vida_util_estimada=None,
+            vida_util_estimada=params.get("vida_util_dias"),
             estado_actual=EstadoDispositivo.OPERATIVO,
-            gustos=True,
+            gustos=es_gusto,
         )
-        return None, dispositivo
+        return None, dispositivo, "alta"
+
+    existente = ItemDespensa.objects.filter(nombre__iexact=nombre).first()
+    if existente:
+        existente.stock_actual += cantidad
+        existente.save(update_fields=["stock_actual", "updated_at"])
+        return existente, None, "reposicion"
 
     item = ItemDespensa.objects.create(
         nombre=nombre,
-        unidad_medida="unidades",
-        stock_actual=Decimal("1"),
-        stock_minimo=None,
-        # Es NOT NULL en la base y avanzar_dia() se lo resta a TODOS los items
-        # cada dia. En 0, el antojo queda registrado sin consumirse ni reponerse
-        # solo; poner un consumo inventado seria fabricar un dato que nadie dio.
-        consumo_promedio_diario=Decimal("0"),
+        unidad_medida=params.get("unidad_medida") or "unidades",
+        stock_actual=cantidad,
+        stock_minimo=params.get("stock_minimo"),
+        # NOT NULL en la base y avanzar_dia() se lo resta a TODOS los items cada
+        # dia. Un gusto va en 0: queda registrado sin consumirse ni reponerse solo.
+        consumo_promedio_diario=params.get("consumo_promedio_diario") or Decimal("0"),
         precio_estimado=decision["precio"],
-        gustos=True,
+        gustos=es_gusto,
     )
-    return item, None
+    return item, None, "alta"
 
 
 def procesar_consulta_compra(telegram_id, mensaje: str) -> dict:
@@ -484,6 +507,7 @@ def procesar_consulta_compra(telegram_id, mensaje: str) -> dict:
         "precio": str(decision["precio"]) if decision.get("precio") is not None else None,
         "tipo": decision.get("tipo"),
         "situacion": decision.get("situacion"),
+        "es_gusto": decision.get("es_gusto"),
     }
 
     # Falta el precio: no se evalua nada y no se mueve plata, pero queda asentado
@@ -515,8 +539,9 @@ def procesar_consulta_compra(telegram_id, mensaje: str) -> dict:
         return {"procesado": True, "resultado": agente_ahorro.COMPRA_RECHAZADA,
                 "respuesta": respuesta, **payload}
 
-    item, dispositivo = _dar_de_alta_compra(decision)
-    _log(AgenteEnum.AGENTE_AHORRO, resultado, respuesta, payload,
+    item, dispositivo, accion = _dar_de_alta_compra(decision)
+    _log(AgenteEnum.AGENTE_AHORRO, resultado, respuesta,
+         {**payload, "alta": accion, "es_gusto": bool((decision.get("parametros") or {}).get("es_gusto"))},
          residente_autorizador=residente, item_afectado=item, dispositivo_afectado=dispositivo)
     n8n.enviar_whatsapp(
         f"🛍️ {residente.nombre} compro '{decision.get('producto')}' (${precio}). {respuesta}"

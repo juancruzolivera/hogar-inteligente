@@ -82,53 +82,123 @@ Clasifica el tipo:
 - "dispositivo" si es un aparato duradero (una consola, un televisor, un microondas).
 - "item_despensa" si es algo consumible (comida, bebida, limpieza, higiene).
 
+Y decidi si es un gusto:
+- "es_gusto": true si es un capricho del que el hogar puede prescindir, false si es un
+  bien de uso real de la casa. Define si el objeto entra a los ciclos automaticos: un
+  gusto no recibe service ni se repone solo, un bien de uso si.
+
+  La comida cae en los dos lados, segun para que sirve. Son BIENES DE USO los basicos de
+  la alacena, lo que el hogar repone siempre: leche, arroz, aceite, azucar, huevos, yerba,
+  el pan de todos los dias, papel higienico, detergente, shampoo. Son GUSTOS los antojos
+  puntuales, lo que nadie necesita reponer: un pan artesanal o de panaderia, un helado
+  importado, chocolates finos, una cerveza especial, snacks premium.
+
+  Con los aparatos pasa lo mismo. Son BIENES DE USO los que la casa necesita para
+  funcionar: microondas, lavarropas, heladera, ventilador, termotanque. Son GUSTOS los de
+  entretenimiento o decoracion: una consola, un parlante de audiofilo, un adorno, algo de
+  coleccion.
+
+Cuando es_gusto es false hacen falta los parametros operativos del objeto. Estimalos con
+tu conocimiento general (a diferencia del precio, que solo puede salir del mensaje):
+- Si es "dispositivo": "vida_util_dias", cuantos dias dura razonablemente antes de
+  necesitar service, en escala REAL. De referencia: heladera ~3600, lavarropas ~2900,
+  microondas ~2900, ventilador ~1800, notebook ~1500.
+- Si es "item_despensa": "stock_minimo" y "consumo_promedio_diario", en la unidad del
+  producto: cuanto conviene tener siempre en casa y cuanto consume un hogar por dia.
+Cuando es_gusto es true, los tres van en null: un gusto no tiene ciclo que parametrizar.
+
 Respondes SIEMPRE con un JSON de esta forma exacta, sin texto adicional:
 {"precio": <numero en pesos, sin simbolos ni separadores, o null si el mensaje no lo dice>,
  "producto": "<nombre corto del producto, o null si no se entiende que quiere comprar>",
- "tipo": "dispositivo" o "item_despensa"}
+ "tipo": "dispositivo" o "item_despensa",
+ "es_gusto": true o false,
+ "cantidad": <cuantas unidades se compran; 1 si el mensaje no lo aclara>,
+ "unidad_medida": "<unidad del producto (L, kg, unidades); null si es un dispositivo>",
+ "vida_util_dias": <numero, o null>,
+ "stock_minimo": <numero, o null>,
+ "consumo_promedio_diario": <numero, o null>}
 """
 
 PROMPT_VEREDICTO = """Sos el Agente de Ahorro de un sistema de hogar inteligente (SofIA).
-Un residente consulto si conviene una compra. Respondes en espanol, natural, 2 o 3 frases,
-como se lo explicarias a alguien de la casa.
+Un residente consulto si conviene una compra. NO decidis vos si se aprueba: tu trabajo es
+CLASIFICAR el pedido y redactar la respuesta. El sistema combina tu clasificacion con los
+numeros y saca el veredicto.
 
-LA PARTE FINANCIERA YA ESTA RESUELTA por el sistema. No hagas cuentas, no compares montos
-y no cuestiones el veredicto economico: te llega en "situacion", que vale una de estas tres.
+Clasificas tres cosas:
 
-- "NO_ENTRA": la compra no entra en lo que queda del mes. Deci que ahora no se puede y que
-  se puede encarar el mes que viene. Aca "esperar" no se tiene en cuenta.
-- "ALCANZA_TOCANDO_AHORRO": la plata alcanza, pero se usa parte de lo que el hogar queria
-  ahorrar este mes. OJO: que toque el ahorro NO alcanza por si solo para frenar la compra.
-  Eso ya esta contemplado y es perfectamente aceptable cuando la compra se justifica. Sos
-  vos quien decide si en este caso vale la pena.
-- "ENTRA_COMODO": la plata alcanza sin tocar el ahorro del mes.
+1. "fuerza_argumento" -- que tan buena es la razon que dio el residente para esta compra.
+   - "ninguno": no dio ninguna razon, solo dijo que la quiere o pregunto el precio.
+   - "debil": una razon vaga o de puro deseo ("hace mucho que la quiero", "me la merezco").
+   - "solido": una razon concreta que explica POR QUE conviene esta compra. Entran aca: se
+     rompio algo que hace falta, lo necesita para trabajar, estudiar o generar ingresos, es
+     un regalo para alguien, reemplaza algo viejo que ya no rinde, hay un descuento real y
+     grande, es una oportunidad que no se va a repetir, o viene ahorrando especificamente
+     para esto.
+   - "debil": deseo puro, o afirmaciones que no dicen nada sobre por que conviene la compra:
+     "hace mucho que la quiero", "me la merezco", "es mi plata y la gasto en lo que quiero",
+     "me lo gane", "para eso trabajo". Que la plata sea suya es cierto, pero no es un
+     argumento: no explica por que ESTA compra, AHORA.
 
-Cuando la plata alcanza (las dos ultimas situaciones), vos decidis "esperar": true si
-conviene frenar la compra, false si conviene hacerla.
+   NO juzgues el producto en si. Que sea entretenimiento, un lujo o un capricho no vuelve
+   debil al argumento: una consola que el residente usa para generar ingresos haciendo
+   streams es una razon tan solida como un lavarropas. Lo que evaluas es la RAZON, no la
+   categoria del objeto ni si a vos te parece una buena idea gastar en eso.
 
-LA DECISION ES TUYA Y ES FINAL. Nunca pidas confirmacion ni le devuelvas la eleccion al
-residente: nada de "si estas de acuerdo", "vos veras", "decidi vos" o "avisame si queres
-seguir". Resolves y se lo explicas.
+   Si el residente mezcla una afirmacion dudosa con razones que si se sostienen, evalua la
+   razon mas fuerte que se sostiene por si sola. Una parte poco creible no invalida al resto
+   del argumento.
 
-Que pesar para decidir:
-- "porcentaje_del_margen_libre" te dice que tajada de TODO lo disponible se lleva esta
-  compra. Es el dato mas importante para medir si es grande o chica para este hogar:
-  por debajo del 30% es una compra chica y no deberias frenarla salvo que sea un capricho
-  evidente o haya un dispositivo en riesgo; arriba del 70% se lleva casi todo y ahi si
-  conviene frenar, salvo que sea algo urgente.
-- "dispositivos_en_riesgo" es el motivo mas fuerte para frenar: si hay un electrodomestico
-  caro por romperse, conviene guardar la plata para arreglarlo. Si frenas por esto, deci que
-  dispositivo te preocupa.
-- Que tan justificada esta la compra. Un capricho evitable (un adorno caro, un lujo que nadie
-  necesita) se frena antes que algo necesario (se rompio algo que hace falta, lo necesita
-  para trabajar) o una oferta real por algo que el hogar iba a comprar igual.
-- "ahorros_del_hogar" alto te da MAS aire para aprobar, no menos: es un colchon que ya esta.
-  Un ahorro en cero es lo que te tiene que poner cauteloso.
-- Si la situacion es "ENTRA_COMODO", no hay dispositivos en riesgo y no hay nada raro,
-  "esperar" es false.
+2. "argumento_creible" -- si lo que dice puede ser verdad.
+   - true por defecto. Un producto que existe y un descuento plausible son creibles.
+   - false SOLO si no se sostiene: un producto inventado o imposible ("una play 1000 unica
+     en el mundo"), un descuento que no puede ser real, o pura presion sin contenido.
+   Un descuento del 90% en un producto normal es sospechoso pero posible (liquidacion,
+   usado, remate). Un 90% en algo "unico en el mundo" no.
+
+3. "ya_lo_tenemos" -- true si el producto que pide ya esta en "dispositivos_del_hogar".
+   Compara por significado, no por texto exacto: "play 5", "PlayStation 5" y "ps5" son lo
+   mismo; "microondas" y "horno microondas" tambien. Un televisor y un monitor no.
+   Solo aplica a aparatos. Si la compra es de despensa, siempre false: volver a comprar
+   leche o pan es lo normal.
+
+4. "justifica_tener_otro" -- solo importa cuando "ya_lo_tenemos" es true. Es true si el
+   residente dio una razon para tener OTRO ademas del que hay: es un regalo, es para otra
+   persona de la casa, el que tienen se rompio o anda mal, lo quiere para otro ambiente,
+   el actual es viejo y lo va a reemplazar. Es false si pide otro igual sin explicar para
+   que: ahi conviene recordarle que ya tienen uno.
+
+5. "frenar_por_dispositivo" -- true solo si hay algo en "dispositivos_en_riesgo" que conviene
+   priorizar por sobre esta compra (un electrodomestico caro por romperse). Si la lista esta
+   vacia, es false siempre.
+
+Como se combina tu clasificacion con los numeros (para que tu respuesta sea coherente con lo
+que va a pasar):
+- "porcentaje_del_margen_libre" bajo (menos del 30%): se aprueba.
+- Medio (30% a 70%): se aprueba, salvo que sea un capricho y no hayas dado ningun argumento.
+- Alto (mas del 70%, casi toda la plata del hogar): se aprueba SOLO si el argumento es
+  "solido" Y creible. Con argumento solido, SE APRUEBA -- los ahorros del hogar existen para
+  gastarse cuando vale la pena.
+- Si "situacion" es "NO_ENTRA", se rechaza siempre: no hay plata, no importa el argumento.
+- Si "frenar_por_dispositivo" es true, se rechaza.
+- Si "ya_lo_tenemos" es true y "justifica_tener_otro" es false, se rechaza aunque sobre la
+  plata: no tiene sentido comprar dos veces lo mismo sin un motivo. Decile que ya tienen uno.
+
+Y redactas "justificacion_tecnica": 2 o 3 frases en espanol, natural, como se lo explicarias
+a alguien de la casa. Reglas para el texto:
+- Escribilo coherente con el resultado que se desprende de tu clasificacion. Si clasificaste
+  el argumento como solido y la compra se lleva mucho, el mensaje tiene que sonar a "dale,
+  vamos", no a "mejor esperemos".
+- Contestale el argumento de forma explicita, lo tomes o no. Si te convencio, decilo.
+- NUNCA uses "no hay ahorros acumulados" como motivo para frenar. Un ahorro en cero no es un
+  problema: puede ser que todavia no cerro ningun mes y la plata este en el saldo actual.
+- Nunca pidas confirmacion ni le devuelvas la eleccion ("si estas de acuerdo", "vos decidis").
 
 Respondes SIEMPRE con un JSON de esta forma exacta, sin texto adicional:
-{"esperar": true o false,
+{"fuerza_argumento": "ninguno" o "debil" o "solido",
+ "argumento_creible": true o false,
+ "ya_lo_tenemos": true o false,
+ "justifica_tener_otro": true o false,
+ "frenar_por_dispositivo": true o false,
  "justificacion_tecnica": "<2-3 frases en espanol dirigidas al residente>"}
 """
 
@@ -292,6 +362,9 @@ def construir_contexto() -> dict:
         "porcentaje_ahorrable": str(hogar.porcentaje_ahorrable),
         "objetivo_ahorro": str(objetivo_ahorro),
         "margen_respetando_ahorro": str(margen_libre - objetivo_ahorro),
+        "dispositivos_del_hogar": list(
+            Dispositivo.objects.order_by("nombre").values_list("nombre", flat=True)
+        ),
         "items_por_reponer": detalle_despensa,
         "servicios_por_pagar": detalle_servicios,
         "dispositivos_en_riesgo": detalle_mantenimiento,
@@ -311,6 +384,61 @@ def _precio_valido(valor) -> Decimal | None:
     return precio if precio > 0 else None
 
 
+# Umbrales de proporcion sobre el margen libre, en %. Definen cuanta razon hace falta
+# para aprobar: hasta BAJO no hace falta ninguna, arriba de ALTO hace falta un argumento
+# solido y creible (ver _decidir_resultado).
+PCT_BAJO = 30
+PCT_ALTO = 70
+
+VIDA_UTIL_MIN_DIAS = 30
+VIDA_UTIL_MAX_DIAS = 7300  # 20 anos
+VIDA_UTIL_FALLBACK_DIAS = 1825  # 5 anos: si el LLM no estimo o mando algo inusable
+
+# DECISION TOMADA A PROPOSITO, no la "corrijas": el LLM estima la vida util en escala
+# REAL (un microondas ~2900 dias), aunque los dispositivos precargados en Supabase usan
+# una escala comprimida para la demo (la Heladera Inverter figura con 365 dias, un decimo
+# de lo real). Consecuencia conocida: con 1 minuto = 1 dia simulado, un aparato comprado
+# durante la demo no alcanza a degradarse, asi que en la practica no va a pedir service
+# aunque tenga gustos=False. Se acepta porque CU-03 se demuestra con los dispositivos
+# precargados, que si degradan en pocas horas de corrida.
+
+
+def _numero(valor, minimo=None, maximo=None) -> Decimal | None:
+    """Convierte a Decimal y acota al rango. None si no es usable."""
+    if valor is None:
+        return None
+    try:
+        n = Decimal(str(valor))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if minimo is not None and n < minimo:
+        n = Decimal(str(minimo))
+    if maximo is not None and n > maximo:
+        n = Decimal(str(maximo))
+    return n
+
+
+def _sanear_parametros(extraccion: dict) -> dict:
+    """Acota lo que estimo el LLM. Es lo que separa "la IA estima" de "la IA decide
+    cuanto gasta la casa": una vida util de 3 dias programaria un service inmediato
+    de $5.000, y un consumo diario negativo reventaria avanzar_dia().
+    """
+    es_gusto = bool(extraccion.get("es_gusto"))
+    vida_util = _numero(
+        extraccion.get("vida_util_dias"), VIDA_UTIL_MIN_DIAS, VIDA_UTIL_MAX_DIAS
+    )
+    return {
+        "es_gusto": es_gusto,
+        "cantidad": _numero(extraccion.get("cantidad"), 0) or Decimal("1"),
+        "unidad_medida": (extraccion.get("unidad_medida") or "unidades")[:20],
+        # Un gusto va sin vida util (la base lo permite solo en ese caso). Un bien de
+        # uso siempre tiene que tener una: si el LLM no la dio, cae al fallback.
+        "vida_util_dias": None if es_gusto else int(vida_util or VIDA_UTIL_FALLBACK_DIAS),
+        "stock_minimo": None if es_gusto else (_numero(extraccion.get("stock_minimo"), 0) or Decimal("0")),
+        "consumo_promedio_diario": _numero(extraccion.get("consumo_promedio_diario"), 0) or Decimal("0"),
+    }
+
+
 def _clasificar_situacion(precio: Decimal, contexto: dict) -> str:
     """El veredicto economico, en codigo. Nunca lo decide el LLM."""
     margen_libre = Decimal(contexto["margen_libre"])
@@ -320,6 +448,51 @@ def _clasificar_situacion(precio: Decimal, contexto: dict) -> str:
     if precio > margen_respetando_ahorro:
         return ALCANZA_TOCANDO_AHORRO
     return ENTRA_COMODO
+
+
+def _decidir_resultado(
+    situacion: str, porcentaje: Decimal, veredicto: dict, tipo: str | None = None
+) -> str:
+    """Combina la clasificacion del LLM con la proporcion del gasto. El veredicto sale
+    de aca, no del modelo.
+
+    Se llego a esto despues de que el modelo ignorara la instruccion de dejarse
+    convencer: midiendo el punto de quiebre se vio que el umbral del 70% decidia el
+    100% de los casos (abajo aprobaba sin razon alguna, arriba rechazaba con la mejor
+    razon). El LLM clasifica -- que hace bien -- y el codigo combina.
+    """
+    if situacion == NO_ENTRA:
+        return COMPRA_RECHAZADA
+    if veredicto.get("frenar_por_dispositivo"):
+        return COMPRA_RECHAZADA
+
+    # Duplicado sin motivo: aunque sobre la plata, comprar un segundo aparato igual
+    # al que ya hay no tiene sentido. Solo aplica a dispositivos -- en despensa
+    # recomprar es el comportamiento normal (la leche se termina, la consola no).
+    if (
+        tipo == "dispositivo"
+        and veredicto.get("ya_lo_tenemos")
+        and not veredicto.get("justifica_tener_otro")
+    ):
+        return COMPRA_RECHAZADA
+
+    argumento_solido = (
+        veredicto.get("fuerza_argumento") == "solido"
+        and bool(veredicto.get("argumento_creible", True))
+    )
+
+    if porcentaje > PCT_ALTO:
+        # Casi toda la plata del hogar: hace falta una razon de peso, pero si la hay
+        # se aprueba (los ahorros existen para gastarse).
+        return COMPRA_APROBADA if argumento_solido else COMPRA_RECHAZADA
+
+    if porcentaje > PCT_BAJO:
+        sin_ninguna_razon = veredicto.get("fuerza_argumento") == "ninguno"
+        if situacion == ALCANZA_TOCANDO_AHORRO and sin_ninguna_razon:
+            return COMPRA_RECHAZADA
+        return COMPRA_APROBADA
+
+    return COMPRA_APROBADA
 
 
 def evaluar(consulta: str, contexto: dict | None = None) -> dict:
@@ -347,6 +520,7 @@ def evaluar(consulta: str, contexto: dict | None = None) -> dict:
             "producto": extraccion.get("producto"),
             "precio": None,
             "tipo": extraccion.get("tipo"),
+            "es_gusto": bool(extraccion.get("es_gusto")),
             "situacion": None,
             # El texto lo pone el codigo, no el modelo: es siempre el mismo pedido
             # y conviene que la instruccion de como reformular sea consistente.
@@ -380,22 +554,24 @@ def evaluar(consulta: str, contexto: dict | None = None) -> dict:
             "ahorros_del_hogar": contexto["ahorros"],
             "objetivo_ahorro": contexto["objetivo_ahorro"],
             "dispositivos_en_riesgo": contexto["dispositivos_en_riesgo"],
+            "dispositivos_del_hogar": contexto["dispositivos_del_hogar"],
         },
         modelo=MODELO_VEREDICTO,
     )
 
-    if situacion == NO_ENTRA:
-        resultado = COMPRA_RECHAZADA
-    elif veredicto.get("esperar"):
-        resultado = COMPRA_RECHAZADA
-    else:
-        resultado = COMPRA_APROBADA
+    resultado = _decidir_resultado(
+        situacion, porcentaje_margen, veredicto, extraccion.get("tipo")
+    )
 
     return {
         "resultado": resultado,
         "producto": extraccion.get("producto"),
         "precio": precio,
         "tipo": extraccion.get("tipo"),
+        "es_gusto": bool(extraccion.get("es_gusto")),
         "situacion": situacion,
         "justificacion_tecnica": veredicto.get("justificacion_tecnica"),
+        # Parametros operativos estimados por el LLM, ya saneados. Solo se usan si
+        # la compra se aprueba y hay que crear la fila (ver _dar_de_alta_compra).
+        "parametros": _sanear_parametros(extraccion),
     }

@@ -1,12 +1,17 @@
 # Workflows de n8n
 
-Dos workflows independientes, cada uno con su propio Schedule Trigger, y cada uno con 4 nodos
-en cadena: **Code (generador determinístico) → HTTP Request (evento inesperado, IA) → Code
-(combinar) → HTTP Request (POST a Django)**.
+no Tres workflows independientes. Los dos primeros **simulan el paso del tiempo** (Schedule
+Trigger, 4 nodos en cadena: **Code (generador determinístico) → HTTP Request (evento
+inesperado, IA) → Code (combinar) → HTTP Request (POST a Django)**). El tercero es
+distinto: **reacciona a una persona**, no al reloj.
 
 - **El Pulso** — cada 1 minuto = 1 día simulado. Simula consumo diario de despensa/servicios.
 - **Cierre de Mes** — cada 30 minutos = 30 días simulados = 1 mes. Simula los ingresos de cada
   residente y renueva el presupuesto (resetea `monto_gastado` en todas las categorías).
+- **Consulta de Compra** — Telegram Trigger. Un residente pregunta si conviene una compra y
+  el Agente de Ahorro le responde en el mismo chat. Solo 3 nodos y **sin nodo Code**: no hace
+  falta generar nada ni llamar a OpenAI desde n8n, porque todo el razonamiento (y las dos
+  llamadas al LLM) vive en Django.
 
 Van por separado a propósito: el trigger de ingresos no depende del `dia_numero` real de la
 simulación, así que puede desincronizarse si el Pulso se pausa o se reintenta — tenerlo en
@@ -31,7 +36,8 @@ gente), hay que actualizar el `telefono` en los dos archivos para que sigan matc
 
 ## Importar
 
-1. En n8n: Workflows > Import from File > `workflow_pulso.json` y `workflow_ingresos.json`.
+1. En n8n: Workflows > Import from File > `workflow_pulso.json`, `workflow_ingresos.json` y
+   `workflow_consulta.json`.
 2. En cada uno, abrir el primer nodo Code ("Generar consumo simulado" / "Generar ingresos del
    mes") y reemplazar el `jsCode` de ejemplo por el contenido completo de
    [`generador_pulso.js`](generador_pulso.js) / [`generador_ingresos.js`](generador_ingresos.js)
@@ -47,7 +53,36 @@ gente), hay que actualizar el `telefono` en los dos archivos para que sigan matc
    los que van a Django, `Authorization: Bearer ...` para los que van a OpenAI). No usar Basic
    Auth ni "Generic Credential Type" sin haber creado antes la credencial desde la UI de n8n (si
    no, el nodo tira error al ejecutar sin llegar a mandar el request).
-6. Activar ambos workflows.
+6. Solo para **Consulta de Compra**: abrir los nodos `Mensaje de Telegram` y `Responder en el
+   chat` y elegir la credencial de Telegram (la misma en los dos). Los pasos 2 y 3 no aplican
+   a este workflow, porque no tiene nodos Code.
+7. Activar los tres workflows.
+
+## Consulta de Compra — el único que responde a una persona
+
+```
+Mensaje de Telegram ──► POST /api/consulta/ ──► Responder en el chat
+```
+
+El residente escribe libre (*"puedo comprar una play 5 que sale 900000?"*), Django decide, y la
+respuesta vuelve **en el body del POST** (campo `respuesta`), que el tercer nodo manda de
+vuelta al chat. Por eso este flujo no usa un webhook saliente: el residente lee la respuesta
+en el mismo hilo donde preguntó.
+
+Cosas a tener en cuenta al armarlo:
+
+- **Hace falta una credencial de Telegram** (un bot creado con @BotFather). Es lo único que no
+  se puede dejar resuelto en el JSON: la credencial se elige desde la UI de n8n.
+- **El `telegram_id` de cada residente tiene que estar cargado** en la tabla `residente` de
+  Supabase. Si no, Django responde `RESIDENTE_DESCONOCIDO` y no evalúa nada. El id lo da
+  @userinfobot en Telegram.
+- **El precio es obligatorio en el mensaje.** Si no lo trae, Django devuelve
+  `CONSULTA_INCOMPLETA` y la respuesta le pide al residente que lo aclare. El LLM tiene
+  prohibido estimar precios: ese número se le descuenta de verdad a la billetera del hogar.
+- **El trigger se dispara con cualquier mensaje al bot**, no solo con consultas de compra. Un
+  "hola" termina contestado con el pedido de que aclare el precio. Si molesta, se resuelve
+  agregando un nodo IF antes del HTTP Request. Un mensaje sin texto (una foto, un sticker) se
+  manda como `(sin texto)` y cae por el mismo camino, así que no rompe la ejecución.
 
 ## El paso de IA — "Evento inesperado"
 
@@ -149,4 +184,16 @@ Suma los montos de todos los residentes presentes en el body (más el fallback `
 para los que no aparecen), y resetea `monto_gastado` a 0 en todas las categorías de presupuesto.
 Ver `core/services/ingresos.py`.
 
-Ambos endpoints requieren el header `X-Webhook-Secret` (401 si falta o no matchea).
+```json
+POST /api/consulta/
+{
+  "telegram_id": 6079531003,
+  "mensaje": "puedo comprar una play 5 que sale 900000?"
+}
+```
+
+Responde `{"procesado": bool, "resultado": "...", "respuesta": "<texto para el chat>", ...}`,
+donde `resultado` es `COMPRA_APROBADA`, `COMPRA_RECHAZADA`, `CONSULTA_INCOMPLETA` o
+`RESIDENTE_DESCONOCIDO`. Ver `agents/services/agente_ahorro.py`.
+
+Los tres endpoints requieren el header `X-Webhook-Secret` (401 si falta o no matchea).
