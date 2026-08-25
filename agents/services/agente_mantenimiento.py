@@ -20,10 +20,21 @@ Respondes SIEMPRE con un JSON de esta forma exacta, sin texto adicional:
 def calcular_degradacion(dispositivo: Dispositivo, fecha_referencia: date | None = None) -> float:
     """Degradacion = dias desde el ultimo service sobre la vida util estimada (en dias).
 
+    Un dispositivo marcado como `gustos` devuelve 0.0 siempre: esta fuera del ciclo
+    de mantenimiento del hogar y no debe disparar un service nunca.
+
     fecha_referencia es el 'hoy' de la simulacion (EstadoSimulacion.fecha_actual), no la
     fecha real del servidor: el Pulso avanza 1 dia simulado por llamada, y necesitamos que
     la degradacion progrese con esos dias simulados para que la demo sea coherente.
     """
+    if dispositivo.gustos:
+        # Un capricho no se degrada: nunca alcanza el umbral critico.
+        return 0.0
+    if dispositivo.vida_util_estimada is None:
+        # Sin el dato no se asume critico: agendar un service cuesta plata, asi que
+        # ante la duda no se gatilla. (La base solo permite NULL si gustos=True, o
+        # sea que llegar aca ya seria una fila inconsistente.)
+        return 0.0
     if fecha_referencia is None:
         fecha_referencia = EstadoSimulacion.actual().fecha_actual
     if not dispositivo.fecha_ultimo_service or dispositivo.vida_util_estimada <= 0:
@@ -33,7 +44,11 @@ def calcular_degradacion(dispositivo: Dispositivo, fecha_referencia: date | None
 
 
 def detectar_dispositivos_criticos():
-    """CU-03 trigger: degradacion >= umbral y todavia no fue marcado/atendido."""
+    """CU-03 trigger: degradacion >= umbral y todavia no fue marcado/atendido.
+
+    Los dispositivos marcados como `gustos` quedan excluidos: no se les agenda
+    service aunque lleven anos sin mantenimiento.
+    """
     fecha_referencia = EstadoSimulacion.actual().fecha_actual
     criticos = []
     estados_ya_atendidos = {
@@ -42,7 +57,10 @@ def detectar_dispositivos_criticos():
         EstadoDispositivo.WAITING_HUMAN_APPROVAL,
         EstadoDispositivo.FUERA_DE_SERVICIO,
     }
-    for dispositivo in Dispositivo.objects.exclude(estado_actual__in=estados_ya_atendidos):
+    consultados = Dispositivo.objects.filter(gustos=False).exclude(
+        estado_actual__in=estados_ya_atendidos
+    )
+    for dispositivo in consultados:
         if calcular_degradacion(dispositivo, fecha_referencia) >= UMBRAL_DEGRADACION:
             criticos.append(dispositivo)
     return criticos

@@ -13,14 +13,21 @@ def get_client() -> OpenAI:
     return _client
 
 
-def pedir_decision_json(system_prompt: str, contexto: dict) -> dict:
+def pedir_decision_json(
+    system_prompt: str, contexto: dict, modelo: str | None = None
+) -> dict:
     """Llama al modelo con el contexto de un agente y devuelve su decision como dict.
 
     El prompt de cada agente exige una respuesta JSON con forma fija, asi el resultado
     se puede volcar directo a las columnas de DecisionLog sin parseo de texto libre.
+
+    `modelo` permite pisar OPENAI_MODEL para una llamada puntual. Se usa cuando una
+    tarea necesita mas capacidad de razonamiento que el modelo por defecto (ver
+    agents/services/agente_ahorro.py). Sin este parametro, todos los agentes siguen
+    usando el mismo modelo barato de siempre.
     """
     client = get_client()
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model = modelo or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     response = client.chat.completions.create(
         model=model,
         temperature=0.2,

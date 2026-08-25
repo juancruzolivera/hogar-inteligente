@@ -13,17 +13,33 @@ from core.models import (
 
 @admin.register(Residente)
 class ResidenteAdmin(admin.ModelAdmin):
-    list_display = ("nombre", "telefono", "nivel_permiso", "created_at")
+    list_display = ("nombre", "telefono", "telegram_id", "nivel_permiso", "created_at")
 
 
 @admin.register(ItemDespensa)
 class ItemDespensaAdmin(admin.ModelAdmin):
-    list_display = ("nombre", "stock_actual", "stock_minimo", "fecha_vencimiento", "presupuesto")
+    list_display = (
+        "nombre",
+        "stock_actual",
+        "stock_minimo",
+        "gustos",
+        "fecha_vencimiento",
+        "presupuesto",
+    )
+    list_filter = ("gustos",)
 
 
 @admin.register(Dispositivo)
 class DispositivoAdmin(admin.ModelAdmin):
-    list_display = ("nombre", "prioridad", "estado_actual", "fecha_ultimo_service")
+    list_display = (
+        "nombre",
+        "prioridad",
+        "estado_actual",
+        "vida_util_estimada",
+        "gustos",
+        "fecha_ultimo_service",
+    )
+    list_filter = ("gustos", "estado_actual")
 
 
 @admin.register(Presupuesto)
@@ -43,4 +59,10 @@ class EstadoSimulacionAdmin(admin.ModelAdmin):
 
 @admin.register(IngresosHogar)
 class IngresosHogarAdmin(admin.ModelAdmin):
-    list_display = ("saldo_disponible", "actualizado_en")
+    list_display = (
+        "saldo_disponible",
+        "ahorros",
+        "deuda",
+        "porcentaje_ahorrable",
+        "actualizado_en",
+    )

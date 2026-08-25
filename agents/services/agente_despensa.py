@@ -27,8 +27,16 @@ Respondes SIEMPRE con un JSON de esta forma exacta, sin texto adicional:
 
 
 def detectar_items_criticos():
-    """CU-01 trigger: stock_actual <= stock_minimo."""
-    return list(ItemDespensa.objects.filter(stock_actual__lte=F("stock_minimo")))
+    """CU-01 trigger: stock_actual <= stock_minimo.
+
+    Los items marcados como `gustos` quedan excluidos: son antojos puntuales, no
+    articulos de primera necesidad, y no se reponen automaticamente. (Ademas tienen
+    stock_minimo en NULL, y `stock_actual <= NULL` no matchea en SQL -- el filtro
+    explicito esta para no depender de ese detalle.)
+    """
+    return list(
+        ItemDespensa.objects.filter(gustos=False, stock_actual__lte=F("stock_minimo"))
+    )
 
 
 def evaluar(item: ItemDespensa, saldo_disponible=None) -> dict:

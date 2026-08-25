@@ -10,6 +10,10 @@ def cerrar_mes(payload: dict | None = None) -> dict:
     presupuesto (reset simple: monto_gastado vuelve a 0 en todas las categorias,
     limite_mensual no cambia).
 
+    El movimiento de plata lo hace IngresosHogar.recibir_ingreso: barre a ahorros
+    el saldo que sobro del mes que termina, cancela la deuda pendiente con el
+    ingreso nuevo, y lo que queda arranca el saldo del mes nuevo.
+
     `payload` es el body opcional de /api/ingresos/, generado por el flujo de n8n:
     {"ingresos": [{"telefono": "...", "monto": N}]}
     Un residente que no aparece en el body cae al fallback `ingreso_mensual` cargado
@@ -35,13 +39,21 @@ def cerrar_mes(payload: dict | None = None) -> dict:
     categorias = list(Presupuesto.objects.values_list("categoria", flat=True))
     Presupuesto.objects.update(monto_gastado=Decimal("0"), updated_at=timezone.now())
 
-    hogar = IngresosHogar.actual().recibir_ingreso(total)
+    # Se leen ANTES de recibir_ingreso: el saldo sobrante se barre a ahorros y la
+    # deuda se cancela con el ingreso, asi que despues ya no se pueden medir.
+    hogar = IngresosHogar.actual()
+    ahorrado = hogar.saldo_disponible
+    deuda_cancelada = min(hogar.deuda, total)
+    hogar.recibir_ingreso(total)
 
     return {
         "mes_numero": mes_numero,
         "total_ingresos": str(total),
         "por_residente": por_residente,
         "categorias_reseteadas": categorias,
+        "ahorrado_del_mes_anterior": str(ahorrado),
+        "deuda_cancelada": str(deuda_cancelada),
         "saldo_disponible_hogar": str(hogar.saldo_disponible),
+        "ahorros_hogar": str(hogar.ahorros),
         "deuda_hogar": str(hogar.deuda),
     }

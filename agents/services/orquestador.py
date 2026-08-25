@@ -8,7 +8,9 @@ from core.models import (
     ConsumoLog,
     Dispositivo,
     EstadoDispositivo,
+    EstadoSimulacion,
     IngresosHogar,
+    ItemDespensa,
     Presupuesto,
     Residente,
     TipoServicio,
@@ -17,7 +19,7 @@ from core.services.ingresos import cerrar_mes
 from core.services.simulacion import avanzar_dia
 from integrations import services as n8n
 
-from . import agente_consumo, agente_despensa, agente_mantenimiento
+from . import agente_ahorro, agente_consumo, agente_despensa, agente_mantenimiento
 from ..models import AgenteEnum, DecisionLog
 
 CATEGORIA_MANTENIMIENTO = "Mantenimiento"
@@ -26,6 +28,11 @@ CATEGORIA_OCIO = "Ocio"
 # Dispositivo no tiene un campo de costo propio (ver core/models.py); se usa una
 # estimacion fija por service hasta que se modele el costo real por dispositivo.
 COSTO_ESTIMADO_SERVICE = Decimal("5000")
+# Prioridad con la que entra un dispositivo comprado. La base exige entre 1 y 5
+# (CHECK) y 1 es la mas urgente: un capricho va al fondo de la cola, y un bien de
+# uso nuevo al medio (no sabemos si es critico como la heladera).
+PRIORIDAD_GUSTO = 5
+PRIORIDAD_BIEN_DE_USO = 3
 # Precio por unidad de cada servicio (pesos), para convertir el consumo fisico
 # diario (litros/kWh/m3) en una factura real. Calibrados para que un mes de
 # consumo baseline ronde el limite_mensual actual de la categoria Servicios.
@@ -80,7 +87,7 @@ def _procesar_despensa(dia_numero: int) -> list[DecisionLog]:
         es_esencial = presupuesto.es_esencial if presupuesto else True
         if monto and not IngresosHogar.actual().pagar(monto, es_esencial):
             motivo = (
-                f"no es esencial (categoria '{presupuesto.categoria}') y no hay saldo disponible"
+                f"no es esencial (categoria '{presupuesto.categoria}') y no hay saldo ni ahorros"
                 if not es_esencial
                 else f"es esencial pero financiarlo superaria el limite de deuda del hogar "
                      f"(${LIMITE_DEUDA})"
@@ -169,7 +176,7 @@ def _procesar_factura_servicios(dia_numero: int, consumo_dia: dict) -> list[Deci
 def _procesar_ocio(payload: dict | None, dia_numero: int) -> list[DecisionLog]:
     """Gastos de ocio declarados en el body de /api/pulso/ (hoy, via el 'evento
     inesperado' que genera la IA del lado de n8n -- ver n8n/generador_pulso.js).
-    Ocio no es esencial: si no hay saldo disponible en el hogar, el gasto se
+    Ocio no es esencial: si no hay saldo ni ahorros en el hogar, el gasto se
     rechaza directamente (no se acumula como deuda, a diferencia de las
     categorias esenciales).
     """
@@ -189,11 +196,11 @@ def _procesar_ocio(payload: dict | None, dia_numero: int) -> list[DecisionLog]:
                 AgenteEnum.ORQUESTADOR,
                 "GASTO_OCIO_RECHAZADO",
                 f'Gasto de ocio ("{motivo}", ${monto}) rechazado: la categoria "{CATEGORIA_OCIO}" '
-                f"no es esencial y no hay saldo disponible en el hogar.",
+                f"no es esencial y no hay saldo ni ahorros disponibles en el hogar.",
                 {"telefono": telefono, "motivo": motivo, "dia_simulado": dia_numero},
                 presupuesto_afectado=presupuesto,
             ))
-            n8n.enviar_whatsapp(f'⚠️ No se pudo cubrir un gasto de ocio ("{motivo}"): sin saldo.')
+            n8n.enviar_whatsapp(f'⚠️ No se pudo cubrir un gasto de ocio ("{motivo}"): sin saldo ni ahorros.')
             continue
 
         if presupuesto:
@@ -247,7 +254,7 @@ def _procesar_mantenimiento(dia_numero: int) -> list[DecisionLog]:
 
         if not IngresosHogar.actual().pagar(COSTO_ESTIMADO_SERVICE, es_esencial):
             motivo = (
-                "la categoria 'Mantenimiento' no es esencial y no hay saldo disponible"
+                "la categoria 'Mantenimiento' no es esencial y no hay saldo ni ahorros"
                 if not es_esencial
                 else f"es esencial pero financiarlo superaria el limite de deuda del hogar (${LIMITE_DEUDA})"
             )
@@ -310,12 +317,16 @@ def procesar_cierre_mes(payload: dict | None = None) -> DecisionLog:
     resumen = cerrar_mes(payload)
     justificacion = (
         f"Cierre de mes simulado #{resumen['mes_numero']}: ingresaron ${resumen['total_ingresos']} "
-        f"entre {len(resumen['por_residente'])} residente(s). Se reinicia monto_gastado en "
-        f"{len(resumen['categorias_reseteadas'])} categoria(s) de presupuesto."
+        f"entre {len(resumen['por_residente'])} residente(s). Se barrio "
+        f"${resumen['ahorrado_del_mes_anterior']} de saldo sobrante a ahorros (acumulado: "
+        f"${resumen['ahorros_hogar']}) y se cancelaron ${resumen['deuda_cancelada']} de deuda. "
+        f"Se reinicia monto_gastado en {len(resumen['categorias_reseteadas'])} "
+        f"categoria(s) de presupuesto."
     )
     log = _log(AgenteEnum.ORQUESTADOR, "CIERRE_DE_MES", justificacion, resumen)
     n8n.enviar_whatsapp(
-        f"💰 Cierre de mes: ingresaron ${resumen['total_ingresos']}. Los presupuestos se renovaron."
+        f"💰 Cierre de mes: ingresaron ${resumen['total_ingresos']}. "
+        f"Ahorros del hogar: ${resumen['ahorros_hogar']}. Los presupuestos se renovaron."
     )
     return log
 
@@ -407,3 +418,132 @@ def procesar_comando_manual(telefono: str, mensaje: str) -> DecisionLog | None:
 
     n8n.enviar_whatsapp(f"{residente.nombre}: no reconozco ese comando.")
     return None
+
+
+def _dar_de_alta_compra(decision: dict) -> tuple:
+    """Suma la compra aprobada al inventario del hogar.
+
+    Busca por nombre antes de crear, porque `nombre` NO es unico en ninguna de las
+    dos tablas y una fila duplicada rompe cosas: `avanzar_dia()` matchea los items
+    por nombre en minusculas, asi que dos "Leche Entera 1L" reciben cada una el
+    consumo completo del dia (consumo doble) y las dos se reponen.
+
+    - Item que ya existe -> reposicion: se le suma al stock.
+    - Dispositivo que ya existe -> reemplazo: vuelve a arrancar su degradacion y
+      conserva la `vida_util_estimada` que ya tenia (no hay que estimar nada).
+    - No existe -> alta, con `gustos` y los parametros operativos que decidio el
+      agente (ver agente_ahorro._sanear_parametros).
+
+    Devuelve (item, dispositivo, accion) con accion en {alta, reposicion, reemplazo}.
+    """
+    nombre = (decision.get("producto") or "Compra sin nombre").strip()[:255]
+    params = decision.get("parametros") or {}
+    es_gusto = bool(params.get("es_gusto", decision.get("es_gusto")))
+    cantidad = Decimal(str(params.get("cantidad") or 1))
+
+    if decision.get("tipo") == "dispositivo":
+        existente = Dispositivo.objects.filter(nombre__iexact=nombre).first()
+        if existente:
+            existente.fecha_ultimo_service = EstadoSimulacion.actual().fecha_actual
+            existente.estado_actual = EstadoDispositivo.OPERATIVO
+            existente.save(
+                update_fields=["fecha_ultimo_service", "estado_actual", "updated_at"]
+            )
+            return None, existente, "reemplazo"
+
+        dispositivo = Dispositivo.objects.create(
+            nombre=nombre,
+            prioridad=PRIORIDAD_GUSTO if es_gusto else PRIORIDAD_BIEN_DE_USO,
+            fecha_ultimo_service=EstadoSimulacion.actual().fecha_actual,
+            vida_util_estimada=params.get("vida_util_dias"),
+            estado_actual=EstadoDispositivo.OPERATIVO,
+            gustos=es_gusto,
+        )
+        return None, dispositivo, "alta"
+
+    existente = ItemDespensa.objects.filter(nombre__iexact=nombre).first()
+    if existente:
+        existente.stock_actual += cantidad
+        existente.save(update_fields=["stock_actual", "updated_at"])
+        return existente, None, "reposicion"
+
+    item = ItemDespensa.objects.create(
+        nombre=nombre,
+        unidad_medida=params.get("unidad_medida") or "unidades",
+        stock_actual=cantidad,
+        stock_minimo=params.get("stock_minimo"),
+        # NOT NULL en la base y avanzar_dia() se lo resta a TODOS los items cada
+        # dia. Un gusto va en 0: queda registrado sin consumirse ni reponerse solo.
+        consumo_promedio_diario=params.get("consumo_promedio_diario") or Decimal("0"),
+        precio_estimado=decision["precio"],
+        gustos=es_gusto,
+    )
+    return item, None, "alta"
+
+
+def procesar_consulta_compra(telegram_id, mensaje: str) -> dict:
+    """Punto de entrada de /api/consulta/: un residente pregunta por Telegram si
+    conviene una compra.
+
+    Devuelve un dict que la view serializa tal cual. `respuesta` es el texto que
+    n8n manda de vuelta al chat, asi el residente lo lee en el mismo hilo donde
+    pregunto (por eso este flujo no usa un webhook saliente).
+    """
+    try:
+        residente = Residente.objects.get(telegram_id=telegram_id)
+    except (Residente.DoesNotExist, ValueError, TypeError):
+        return {
+            "procesado": False,
+            "resultado": "RESIDENTE_DESCONOCIDO",
+            "respuesta": "No reconozco esta cuenta de Telegram, no puedo responder consultas.",
+        }
+
+    decision = agente_ahorro.evaluar(mensaje)
+    resultado = decision["resultado"]
+    respuesta = decision["justificacion_tecnica"]
+    payload = {
+        "consulta": mensaje,
+        "producto": decision.get("producto"),
+        "precio": str(decision["precio"]) if decision.get("precio") is not None else None,
+        "tipo": decision.get("tipo"),
+        "situacion": decision.get("situacion"),
+        "es_gusto": decision.get("es_gusto"),
+    }
+
+    # Falta el precio: no se evalua nada y no se mueve plata, pero queda asentado
+    # que el agente contesto.
+    if resultado == agente_ahorro.CONSULTA_INCOMPLETA:
+        _log(AgenteEnum.AGENTE_AHORRO, resultado, respuesta, payload,
+             residente_autorizador=residente)
+        return {"procesado": True, "resultado": resultado, "respuesta": respuesta, **payload}
+
+    if resultado == agente_ahorro.COMPRA_RECHAZADA:
+        _log(AgenteEnum.AGENTE_AHORRO, resultado, respuesta, payload,
+             residente_autorizador=residente)
+        return {"procesado": True, "resultado": resultado, "respuesta": respuesta, **payload}
+
+    # Aprobada: recien aca se toca la plata. El contexto que uso el agente se
+    # calculo unos segundos antes, asi que el saldo pudo cambiar en el medio (un
+    # Pulso que corrio y cobro la factura del dia, por ejemplo). pagar() es la
+    # unica fuente de verdad: si dice que no, la compra no se hace.
+    precio = decision["precio"]
+    if not IngresosHogar.actual().pagar(precio, es_esencial=False):
+        respuesta = (
+            f"Te habia dicho que si, pero cuando fui a pagar la plata ya no alcanzaba "
+            f"(algun gasto entro en el medio). '{decision.get('producto')}' queda para mas adelante."
+        )
+        _log(AgenteEnum.AGENTE_AHORRO, agente_ahorro.COMPRA_RECHAZADA, respuesta,
+             {**payload, "motivo": "sin fondos al momento de pagar"},
+             residente_autorizador=residente)
+        n8n.enviar_whatsapp(f"⚠️ No se pudo cerrar la compra de '{decision.get('producto')}': sin fondos.")
+        return {"procesado": True, "resultado": agente_ahorro.COMPRA_RECHAZADA,
+                "respuesta": respuesta, **payload}
+
+    item, dispositivo, accion = _dar_de_alta_compra(decision)
+    _log(AgenteEnum.AGENTE_AHORRO, resultado, respuesta,
+         {**payload, "alta": accion, "es_gusto": bool((decision.get("parametros") or {}).get("es_gusto"))},
+         residente_autorizador=residente, item_afectado=item, dispositivo_afectado=dispositivo)
+    n8n.enviar_whatsapp(
+        f"🛍️ {residente.nombre} compro '{decision.get('producto')}' (${precio}). {respuesta}"
+    )
+    return {"procesado": True, "resultado": resultado, "respuesta": respuesta, **payload}

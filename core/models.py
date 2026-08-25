@@ -29,6 +29,9 @@ class Residente(models.Model):
     id_residente = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     nombre = models.CharField(max_length=255)
     telefono = models.CharField(max_length=32, unique=True)
+    # Identidad de Telegram: chat_id numerico, que es estable (el username lo puede
+    # cambiar el usuario). Lo usa /api/consulta/ para saber quien pregunta.
+    telegram_id = models.BigIntegerField(null=True, blank=True, unique=True)
     nivel_permiso = models.CharField(max_length=16, choices=NivelPermiso.choices)
     ingreso_mensual = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -67,10 +70,16 @@ class ItemDespensa(models.Model):
     nombre = models.CharField(max_length=255)
     unidad_medida = models.CharField(max_length=20, blank=True, default="")
     stock_actual = models.DecimalField(max_digits=12, decimal_places=2)
-    stock_minimo = models.DecimalField(max_digits=12, decimal_places=2)
+    # Nullable solo cuando gustos=True (lo garantiza un CHECK en la base, ver
+    # sql/agente_ahorro.sql): un antojo no tiene stock minimo que sostener.
+    stock_minimo = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     consumo_promedio_diario = models.DecimalField(max_digits=12, decimal_places=2)
     fecha_vencimiento = models.DateField(null=True, blank=True)
     precio_estimado = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    # Un "gusto" es un antojo puntual (un pan artesanal), no un articulo de primera
+    # necesidad: se consume, llega a 0 y ahi queda. El Agente de Despensa lo saltea
+    # para no reponerlo indefinidamente (ver agente_despensa.detectar_items_criticos).
+    gustos = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     presupuesto = models.ForeignKey(
@@ -95,8 +104,13 @@ class Dispositivo(models.Model):
     nombre = models.CharField(max_length=255)
     prioridad = models.IntegerField()
     fecha_ultimo_service = models.DateField(null=True, blank=True)
-    vida_util_estimada = models.IntegerField()
+    # Nullable solo cuando gustos=True (lo garantiza un CHECK en la base, ver
+    # sql/agente_ahorro.sql): un capricho no tiene vida util que agotarse.
+    vida_util_estimada = models.IntegerField(null=True, blank=True)
     estado_actual = models.CharField(max_length=32, choices=EstadoDispositivo.choices)
+    # Un "gusto" es un capricho (una consola, por ejemplo) que no entra al ciclo de
+    # mantenimiento del hogar: no se degrada ni se le agenda service nunca.
+    gustos = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -156,36 +170,57 @@ class EstadoSimulacion(models.Model):
 
 
 LIMITE_DEUDA = Decimal("5000000")
+PORCENTAJE_AHORRABLE_DEFAULT = Decimal("10")
 
 
 class IngresosHogar(models.Model):
-    """Saldo real de ingresos disponibles del hogar: sube con cada cierre de mes
-    (ver core.services.ingresos.cerrar_mes) y baja con cada gasto que los agentes
-    aprueban (ver agents.services.orquestador). Es independiente de los topes por
-    categoria de Presupuesto (esos se resetean mes a mes, este saldo se acumula).
+    """Billetera del hogar: tres bolsillos que se usan en un orden fijo.
 
-    `deuda`: si un gasto de una categoria esencial (Presupuesto.es_esencial) no
-    alcanza a cubrirse con el saldo disponible, se paga igual y la diferencia se
-    acumula aca, hasta un tope de LIMITE_DEUDA ($5.000.000): una vez alcanzado,
-    ni siquiera un gasto esencial se financia (queda rechazado, igual que uno no
-    esencial sin saldo). Un gasto de una categoria NO esencial sin saldo suficiente
-    se rechaza directamente (ver agents/services/orquestador.py). La deuda se
-    cancela automaticamente con los ingresos del proximo cierre de mes, antes de
-    que el resto se sume al saldo disponible.
+    `saldo_disponible`: la plata del mes en curso. Arranca con los ingresos del
+    cierre de mes (ver core.services.ingresos.cerrar_mes) y baja con cada gasto
+    que los agentes aprueban.
+
+    `ahorros`: lo que sobro de meses anteriores. Se forma en el cierre de mes,
+    barriendo el `saldo_disponible` que quedo sin gastar. Es el colchon del hogar:
+    cuando el saldo del mes no alcanza, un gasto tira de aca antes de endeudarse,
+    y es lo que habilita compras extraordinarias (ver el Agente de Ahorro).
+
+    `deuda`: si un gasto de una categoria esencial (Presupuesto.es_esencial) no se
+    cubre ni con el saldo ni con los ahorros, se paga igual y la diferencia se
+    acumula aca, hasta un tope de LIMITE_DEUDA ($5.000.000): una vez alcanzado, ni
+    siquiera un gasto esencial se financia. Un gasto NO esencial sin fondos se
+    rechaza directamente. La deuda se cancela con los ingresos del proximo cierre
+    de mes, antes de que el resto pase a formar el saldo del mes nuevo.
+
+    Invariante: `ahorros` y `deuda` nunca son ambos distintos de cero. Se sostiene
+    solo por el orden de las operaciones, sin validarlo aparte: la deuda solo crece
+    cuando saldo y ahorros ya estan en 0 (ver pagar), y si hay deuda el saldo era 0,
+    asi que el barrido del cierre de mes no tiene nada que mandar a ahorros.
+
+    `porcentaje_ahorrable`: NO mueve plata. Es la meta blanda de referencia (10% por
+    defecto) que el Agente de Ahorro usa para razonar si conviene aprobar una compra
+    o si conviene esperar al mes siguiente.
 
     Tabla propia del backend (no viene del modelo de datos original de Supabase),
     igual que EstadoSimulacion. Fila unica (singleton).
     """
 
     saldo_disponible = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    ahorros = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     deuda = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    porcentaje_ahorrable = models.DecimalField(
+        max_digits=5, decimal_places=2, default=PORCENTAJE_AHORRABLE_DEFAULT
+    )
     actualizado_en = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "ingresos_hogar"
 
     def __str__(self):
-        return f"Saldo disponible: {self.saldo_disponible} / Deuda: {self.deuda}"
+        return (
+            f"Saldo: {self.saldo_disponible} / Ahorros: {self.ahorros} / "
+            f"Deuda: {self.deuda}"
+        )
 
     @classmethod
     def actual(cls) -> "IngresosHogar":
@@ -193,35 +228,60 @@ class IngresosHogar(models.Model):
         return hogar
 
     def recibir_ingreso(self, monto) -> "IngresosHogar":
-        """Un ingreso nuevo cancela deuda pendiente primero; lo que sobra se suma
-        al saldo disponible."""
+        """Cierre de mes. Tres pasos, en este orden:
+
+        1. Lo que sobro del saldo del mes que termina se barre a `ahorros`.
+        2. El ingreso nuevo cancela la `deuda` pendiente.
+        3. Lo que quede del ingreso arranca el saldo del mes nuevo.
+
+        Consecuencia buscada: el saldo NO se acumula mes a mes -- cada mes arranca
+        con la plata de ese mes, y el excedente pasa a ser colchon en `ahorros`.
+        """
+        monto = Decimal(str(monto))
+
+        if self.saldo_disponible > 0:
+            self.ahorros += self.saldo_disponible
+            self.saldo_disponible = Decimal("0")
+
         if self.deuda > 0:
             pago_deuda = min(self.deuda, monto)
             self.deuda -= pago_deuda
             monto -= pago_deuda
+
         self.saldo_disponible += monto
-        self.save(update_fields=["saldo_disponible", "deuda", "actualizado_en"])
+        self.save(
+            update_fields=["saldo_disponible", "ahorros", "deuda", "actualizado_en"]
+        )
         return self
 
     def pagar(self, monto, es_esencial: bool) -> bool:
-        """Aplica un gasto. Si alcanza el saldo, lo descuenta y devuelve True. Si no
-        alcanza y es esencial, paga igual y acumula la diferencia como deuda, siempre
-        que no supere LIMITE_DEUDA (devuelve True: la compra se ejecuta). Si no
-        alcanza y NO es esencial, o si es esencial pero financiarlo superaria el
-        limite de deuda, no toca el saldo y devuelve False (la compra no se ejecuta)."""
-        if monto <= self.saldo_disponible:
-            self.saldo_disponible -= monto
-            self.save(update_fields=["saldo_disponible", "actualizado_en"])
+        """Aplica un gasto tirando de los bolsillos en orden: `saldo_disponible`,
+        despues `ahorros`, y solo para categorias esenciales, `deuda`.
+
+        Devuelve True si el gasto se ejecuta y False si se rechaza. Cuando devuelve
+        False no toca ningun bolsillo: se calcula todo antes de escribir.
+
+        Se rechaza en dos casos: el gasto NO es esencial y no alcanzan saldo +
+        ahorros, o es esencial pero financiar el faltante superaria LIMITE_DEUDA.
+        """
+        monto = Decimal(str(monto))
+        if monto <= 0:
             return True
 
-        if not es_esencial:
-            return False
+        desde_saldo = min(monto, self.saldo_disponible)
+        desde_ahorros = min(monto - desde_saldo, self.ahorros)
+        faltante = monto - desde_saldo - desde_ahorros
 
-        faltante = monto - self.saldo_disponible
-        if self.deuda + faltante > LIMITE_DEUDA:
-            return False
+        if faltante > 0:
+            if not es_esencial:
+                return False
+            if self.deuda + faltante > LIMITE_DEUDA:
+                return False
 
+        self.saldo_disponible -= desde_saldo
+        self.ahorros -= desde_ahorros
         self.deuda += faltante
-        self.saldo_disponible = Decimal("0")
-        self.save(update_fields=["saldo_disponible", "deuda", "actualizado_en"])
+        self.save(
+            update_fields=["saldo_disponible", "ahorros", "deuda", "actualizado_en"]
+        )
         return True

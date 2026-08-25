@@ -2,7 +2,12 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from agents.services.orquestador import ejecutar_ciclo, procesar_cierre_mes, procesar_comando_manual
+from agents.services.orquestador import (
+    ejecutar_ciclo,
+    procesar_cierre_mes,
+    procesar_comando_manual,
+    procesar_consulta_compra,
+)
 
 from .auth import secret_valido
 
@@ -100,3 +105,28 @@ def comando(request):
         },
         status=200,
     )
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def consulta(request):
+    """Recibe el POST del workflow de Telegram cuando un residente consulta si
+    conviene una compra. Espera {"telegram_id": <numero>, "mensaje": "..."}.
+
+    A diferencia de los otros endpoints, la respuesta al residente viaja en el body
+    (campo `respuesta`): el mismo workflow que trajo la consulta la manda de vuelta
+    al chat, asi la lee en el hilo donde pregunto.
+
+    El mensaje tiene que incluir el precio. Si no lo trae, se responde
+    CONSULTA_INCOMPLETA pidiendo que lo aclare, sin evaluar ni mover plata.
+    """
+    if not secret_valido(request):
+        return Response({"detail": "No autorizado."}, status=401)
+
+    telegram_id = request.data.get("telegram_id")
+    mensaje = request.data.get("mensaje")
+    if not telegram_id or not mensaje:
+        return Response({"detail": "Faltan 'telegram_id' y/o 'mensaje'."}, status=400)
+
+    return Response(procesar_consulta_compra(telegram_id, mensaje), status=200)
