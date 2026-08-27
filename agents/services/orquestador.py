@@ -25,9 +25,6 @@ from ..models import AgenteEnum, DecisionLog
 CATEGORIA_MANTENIMIENTO = "Mantenimiento"
 CATEGORIA_SERVICIOS = "Servicios"
 CATEGORIA_OCIO = "Ocio"
-# Dispositivo no tiene un campo de costo propio (ver core/models.py); se usa una
-# estimacion fija por service hasta que se modele el costo real por dispositivo.
-COSTO_ESTIMADO_SERVICE = Decimal("5000")
 # Prioridad con la que entra un dispositivo comprado. La base exige entre 1 y 5
 # (CHECK) y 1 es la mas urgente: un capricho va al fondo de la cola, y un bien de
 # uso nuevo al medio (no sabemos si es critico como la heladera).
@@ -240,19 +237,26 @@ def _procesar_consumo(dia_numero: int) -> list[DecisionLog]:
 
 
 def _procesar_mantenimiento(dia_numero: int) -> list[DecisionLog]:
-    """CU-03: el agente decide por si mismo, viendo el saldo disponible de
-    Mantenimiento (ver agente_mantenimiento.evaluar). Igual que en despensa, el
-    gasto se valida contra el saldo real del hogar: esencial y sin fondos -> se
-    hace igual y se acumula como deuda; no esencial y sin fondos -> se rechaza.
+    """CU-03: por cada dispositivo al que le toque algo hoy (ver
+    agente_mantenimiento.detectar_dispositivos_criticos), se cobra y se resuelve
+    en el momento -- no queda ningun dispositivo esperando una accion futura.
+    Igual que en despensa, el gasto se valida contra el saldo real del hogar:
+    esencial y sin fondos -> se hace igual y se acumula como deuda; no esencial
+    y sin fondos -> se rechaza (y se reintenta el proximo Pulso, el dispositivo
+    sigue "vencido" hasta que se pueda pagar).
     """
     logs = []
     presupuesto = Presupuesto.objects.filter(categoria=CATEGORIA_MANTENIMIENTO).first()
     es_esencial = presupuesto.es_esencial if presupuesto else True
-    for dispositivo in agente_mantenimiento.detectar_dispositivos_criticos():
-        saldo_disponible = presupuesto.saldo_disponible if presupuesto else None
-        decision = agente_mantenimiento.evaluar(dispositivo, saldo_disponible)
+    fecha_hoy = EstadoSimulacion.actual().fecha_actual
 
-        if not IngresosHogar.actual().pagar(COSTO_ESTIMADO_SERVICE, es_esencial):
+    for dispositivo, accion in agente_mantenimiento.detectar_dispositivos_criticos():
+        es_reemplazo = accion == agente_mantenimiento.ACCION_REEMPLAZO
+        monto = dispositivo.costo_reemplazo if es_reemplazo else dispositivo.costo_service
+        saldo_disponible = presupuesto.saldo_disponible if presupuesto else None
+        decision = agente_mantenimiento.evaluar(dispositivo, accion, monto, saldo_disponible)
+
+        if not IngresosHogar.actual().pagar(monto, es_esencial):
             motivo = (
                 "la categoria 'Mantenimiento' no es esencial y no hay saldo ni ahorros"
                 if not es_esencial
@@ -261,32 +265,48 @@ def _procesar_mantenimiento(dia_numero: int) -> list[DecisionLog]:
             logs.append(_log(
                 AgenteEnum.AGENTE_MANTENIMIENTO,
                 "SOLICITUD_RECHAZADA_SIN_FONDOS",
-                f"Service de '{dispositivo.nombre}' rechazado: {motivo}.",
-                {"dispositivo": dispositivo.nombre, "dia_simulado": dia_numero},
+                f"{accion.capitalize()} de '{dispositivo.nombre}' rechazado: {motivo}.",
+                {"dispositivo": dispositivo.nombre, "accion": accion, "monto": str(monto), "dia_simulado": dia_numero},
                 dispositivo_afectado=dispositivo,
                 presupuesto_afectado=presupuesto,
             ))
-            n8n.enviar_whatsapp(f"⚠️ No se pudo agendar el service de '{dispositivo.nombre}': {motivo}.")
+            n8n.enviar_whatsapp(f"⚠️ No se pudo cubrir el {accion.lower()} de '{dispositivo.nombre}': {motivo}.")
             continue
 
-        dispositivo.estado_actual = EstadoDispositivo.REQUIERE_SERVICE
-        dispositivo.save(update_fields=["estado_actual"])
-
         if presupuesto:
-            presupuesto.monto_gastado += COSTO_ESTIMADO_SERVICE
+            presupuesto.monto_gastado += monto
             presupuesto.save(update_fields=["monto_gastado", "updated_at"])
+
+        if es_reemplazo:
+            # Reemplazo: unidad nueva, arrancan los dos relojes de cero. Se
+            # conserva vida_util_estimada/dias_entre_service/costos: son specs
+            # del modelo de electrodomestico, no cambian con la unidad fisica.
+            dispositivo.fecha_instalacion = fecha_hoy
+            dispositivo.fecha_ultima_revision = fecha_hoy
+            dispositivo.estado_actual = EstadoDispositivo.OPERATIVO
+            dispositivo.save(update_fields=["fecha_instalacion", "fecha_ultima_revision", "estado_actual"])
+            accion_log = "DISPOSITIVO_REEMPLAZADO"
+            mensaje_whatsapp = f"🔧 Se reemplazo '{dispositivo.nombre}' (cumplio su vida util). Costo: ${monto}."
+            fecha_evento = (timezone.localdate() + timedelta(days=2)).isoformat()
+            n8n.agendar_evento(dispositivo.nombre, fecha_evento, "Reemplazo de electrodomestico")
+        else:
+            # Service rutinario: solo se resetea el reloj de revision, la vida
+            # util total sigue contando desde el ultimo reemplazo.
+            dispositivo.fecha_ultima_revision = fecha_hoy
+            dispositivo.estado_actual = EstadoDispositivo.OPERATIVO
+            dispositivo.save(update_fields=["fecha_ultima_revision", "estado_actual"])
+            accion_log = "SERVICE_RUTINARIO_REALIZADO"
+            mensaje_whatsapp = f"🔧 Se hizo el service de rutina de '{dispositivo.nombre}'. Costo: ${monto}."
 
         logs.append(_log(
             AgenteEnum.AGENTE_MANTENIMIENTO,
-            "AGENDAR_SERVICE",
+            accion_log,
             decision["justificacion_tecnica"],
-            {"dispositivo": dispositivo.nombre, "dia_simulado": dia_numero},
+            {"dispositivo": dispositivo.nombre, "accion": accion, "monto": str(monto), "dia_simulado": dia_numero},
             dispositivo_afectado=dispositivo,
             presupuesto_afectado=presupuesto,
         ))
-        fecha = (timezone.localdate() + timedelta(days=2)).isoformat()
-        n8n.agendar_evento(dispositivo.nombre, fecha, "Service de mantenimiento")
-        n8n.enviar_whatsapp(f"🔧 Se agendo un service para '{dispositivo.nombre}'.")
+        n8n.enviar_whatsapp(mensaje_whatsapp)
     return logs
 
 
@@ -444,18 +464,33 @@ def _dar_de_alta_compra(decision: dict) -> tuple:
     if decision.get("tipo") == "dispositivo":
         existente = Dispositivo.objects.filter(nombre__iexact=nombre).first()
         if existente:
-            existente.fecha_ultimo_service = EstadoSimulacion.actual().fecha_actual
+            fecha_hoy = EstadoSimulacion.actual().fecha_actual
+            # Reemplazo manual (compra por Telegram): arrancan los dos relojes
+            # de mantenimiento de cero, igual que el reemplazo automatico del
+            # Pulso (ver orquestador._procesar_mantenimiento). Se conservan
+            # dias_entre_service/costo_service/costo_reemplazo: son specs del
+            # modelo de electrodomestico, no cambian con la unidad fisica.
+            existente.fecha_instalacion = fecha_hoy
+            existente.fecha_ultima_revision = fecha_hoy
             existente.estado_actual = EstadoDispositivo.OPERATIVO
             existente.save(
-                update_fields=["fecha_ultimo_service", "estado_actual", "updated_at"]
+                update_fields=["fecha_instalacion", "fecha_ultima_revision", "estado_actual", "updated_at"]
             )
             return None, existente, "reemplazo"
 
         dispositivo = Dispositivo.objects.create(
             nombre=nombre,
             prioridad=PRIORIDAD_GUSTO if es_gusto else PRIORIDAD_BIEN_DE_USO,
-            fecha_ultimo_service=EstadoSimulacion.actual().fecha_actual,
+            fecha_instalacion=EstadoSimulacion.actual().fecha_actual,
+            fecha_ultima_revision=EstadoSimulacion.actual().fecha_actual,
             vida_util_estimada=params.get("vida_util_dias"),
+            # NULL solo si es_gusto (lo exige el CHECK de la base, ver
+            # sql/agente_mantenimiento.sql): un bien de uso nuevo necesita
+            # entrar al ciclo de mantenimiento con estos 3 campos calculados
+            # en codigo (ver agente_ahorro._sanear_parametros).
+            dias_entre_service=params.get("dias_entre_service"),
+            costo_service=params.get("costo_service"),
+            costo_reemplazo=params.get("costo_reemplazo"),
             estado_actual=EstadoDispositivo.OPERATIVO,
             gustos=es_gusto,
         )

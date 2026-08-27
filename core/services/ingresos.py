@@ -31,7 +31,16 @@ def cerrar_mes(payload: dict | None = None) -> dict:
     total = Decimal("0")
     por_residente = {}
     for residente in Residente.objects.all():
-        monto = ingresos_body.get(residente.telefono, residente.ingreso_mensual)
+        monto_body = ingresos_body.get(residente.telefono)
+        monto = monto_body if monto_body is not None else residente.ingreso_mensual
+
+        # El monto real de este cierre lo manda n8n en el body; se persiste aca
+        # para que ingreso_mensual deje de quedar siempre en 0 y sirva como
+        # fallback real la proxima vez que un residente no aparezca en el body.
+        if monto_body is not None and monto_body != residente.ingreso_mensual:
+            residente.ingreso_mensual = monto_body
+            residente.save(update_fields=["ingreso_mensual"])
+
         if monto:
             total += monto
             por_residente[residente.nombre] = str(monto)

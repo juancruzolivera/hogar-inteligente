@@ -14,9 +14,13 @@
 // en el body que arma este nodo, Django usa el fallback `ingreso_mensual` de
 // su fila en la base (hoy 0 para todos: sin body, no entra plata).
 const RESIDENTES = [
-  { nombre: "Carla", telefono: "+5491112345678", ingreso_base: 420000, variacion_pct: 0.1 },
-  { nombre: "Julian", telefono: "+5491122223333", ingreso_base: 350000, variacion_pct: 0.1 },
-  { nombre: "Sofia (invitada)", telefono: "+5491144445555", ingreso_base: 0, variacion_pct: 0 },
+  { nombre: "Gonzalo Lopez", telefono: "+5491112345678", ingreso_base: 1200000, variacion_pct: 0.1 },
+  { nombre: "Co-residente", telefono: "+5491122223333", ingreso_base: 350000, variacion_pct: 0.1 },
+  { nombre: "Visita Frecuente", telefono: "+5491144445555", ingreso_base: 0, variacion_pct: 0 },
+  { nombre: "Estefania Arrieta", telefono: "987546321", ingreso_base: 1300000, variacion_pct: 0.1 },
+  { nombre: "Julieta Ruppert", telefono: "+5491155556666", ingreso_base: 900000, variacion_pct: 0.1 },
+  { nombre: "Carlos Ruminott", telefono: "+5491166667777", ingreso_base: 450000, variacion_pct: 0.1 },
+  { nombre: "Juan Cruz Olivera", telefono: "+5491177778888", ingreso_base: 1500000, variacion_pct: 0.1 },
 ];
 
 // ============================================================================
@@ -51,7 +55,7 @@ Respondes SIEMPRE con un JSON de esta forma exacta, sin texto adicional: {"hay_e
 // La probabilidad se decide aca (JS), no le pedimos al LLM que "adivine" un
 // porcentaje. El LLM solo rellena el contenido cuando PROB_EVENTO_INESPERADO
 // dice que si.
-const PROB_EVENTO_INESPERADO = 0.25; // ~1 de cada 4 meses
+const PROB_EVENTO_INESPERADO = 0.50; // ~1 de cada 4 meses
 const hayEventoForzado = Math.random() < PROB_EVENTO_INESPERADO;
 
 // Contador propio (independiente del de generador_pulso.js) solo de referencia

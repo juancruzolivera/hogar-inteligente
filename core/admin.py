@@ -36,8 +36,12 @@ class DispositivoAdmin(admin.ModelAdmin):
         "prioridad",
         "estado_actual",
         "vida_util_estimada",
+        "fecha_instalacion",
+        "dias_entre_service",
+        "fecha_ultima_revision",
+        "costo_service",
+        "costo_reemplazo",
         "gustos",
-        "fecha_ultimo_service",
     )
     list_filter = ("gustos", "estado_actual")
 

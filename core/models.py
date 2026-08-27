@@ -103,10 +103,21 @@ class Dispositivo(models.Model):
     id_dispositivo = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     nombre = models.CharField(max_length=255)
     prioridad = models.IntegerField()
-    fecha_ultimo_service = models.DateField(null=True, blank=True)
+    # Fecha de alta o de ultimo REEMPLAZO (no de service rutinario: ver
+    # fecha_ultima_revision). Junto con vida_util_estimada determina cuando se
+    # cumple la vida util total del dispositivo.
+    fecha_instalacion = models.DateField(null=True, blank=True)
     # Nullable solo cuando gustos=True (lo garantiza un CHECK en la base, ver
     # sql/agente_ahorro.sql): un capricho no tiene vida util que agotarse.
     vida_util_estimada = models.IntegerField(null=True, blank=True)
+    # Fecha del ultimo service RUTINARIO (mantenimiento periodico, no reinicia
+    # el reloj de vida util). Junto con dias_entre_service determina cuando
+    # toca el proximo. Nullable solo cuando gustos=True, igual que los otros 3
+    # campos de mantenimiento (ver CHECK en sql/agente_mantenimiento.sql).
+    fecha_ultima_revision = models.DateField(null=True, blank=True)
+    dias_entre_service = models.IntegerField(null=True, blank=True)
+    costo_service = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    costo_reemplazo = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     estado_actual = models.CharField(max_length=32, choices=EstadoDispositivo.choices)
     # Un "gusto" es un capricho (una consola, por ejemplo) que no entra al ciclo de
     # mantenimiento del hogar: no se degrada ni se le agenda service nunca.

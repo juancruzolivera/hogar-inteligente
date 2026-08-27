@@ -78,7 +78,7 @@ const CATALOGO_DESPENSA = {
 // segun su personalidad), no la lista de productos disponibles.
 const RESIDENTES = [
   {
-    nombre: "Carla",
+    nombre: "Gonzalo Lopez",
     telefono: "+5491112345678",
     arquetipo: "home_office",
     // Pasa mucho tiempo en casa: consume de todo, alto en cafe/mate/te.
@@ -103,7 +103,7 @@ const RESIDENTES = [
     },
   },
   {
-    nombre: "Julian",
+    nombre: "Co-residente",
     telefono: "+5491122223333",
     arquetipo: "oficina_9_18",
     // Menos tiempo en casa: come mas simple (pan, huevos), limpieza moderada.
@@ -128,7 +128,7 @@ const RESIDENTES = [
     },
   },
   {
-    nombre: "Sofia (invitada)",
+    nombre: "Visita Frecuente",
     telefono: "+5491144445555",
     arquetipo: "estudiante",
     // Invitada: consume un poco de todo, en general menos que los otros dos.
@@ -149,6 +149,102 @@ const RESIDENTES = [
     habitos_servicios: {
       AGUA: [1, 2.5],
       LUZ: [0.5, 1.5],
+    },
+  },
+  {
+    nombre: "Estefania Arrieta",
+    telefono: "987546321",
+    arquetipo: "home_office",
+    habitos_despensa: [
+      { item: "Leche Entera 1L", prob: 0.55 },
+      { item: "Arroz 1kg", prob: 0.25 },
+      { item: "Café Molido 500g", prob: 0.7 },
+      { item: "Jabón para Ropa 3L", prob: 0.2 },
+      { item: "Aceite de Girasol 1.5L", prob: 0.25 },
+      { item: "Papel Higiénico 6u", prob: 0.3 },
+      { item: "Yerba Mate 1kg", prob: 0.45 },
+      { item: "Pan Lactal", prob: 0.35 },
+      { item: "Huevos (docena)", prob: 0.2 },
+      { item: "Detergente para Platos", prob: 0.2 },
+      { item: "Shampoo", prob: 0.15 },
+      { item: "Azúcar 1kg", prob: 0.25 },
+    ],
+    habitos_servicios: {
+      AGUA: [2, 4.5],
+      LUZ: [1.5, 3],
+      GAS: [0.5, 1.3],
+    },
+  },
+  {
+    nombre: "Julieta Ruppert",
+    telefono: "+5491155556666",
+    arquetipo: "oficina_9_18",
+    habitos_despensa: [
+      { item: "Leche Entera 1L", prob: 0.35 },
+      { item: "Arroz 1kg", prob: 0.3 },
+      { item: "Café Molido 500g", prob: 0.35 },
+      { item: "Jabón para Ropa 3L", prob: 0.25 },
+      { item: "Aceite de Girasol 1.5L", prob: 0.2 },
+      { item: "Papel Higiénico 6u", prob: 0.2 },
+      { item: "Yerba Mate 1kg", prob: 0.25 },
+      { item: "Pan Lactal", prob: 0.45 },
+      { item: "Huevos (docena)", prob: 0.35 },
+      { item: "Detergente para Platos", prob: 0.25 },
+      { item: "Shampoo", prob: 0.2 },
+      { item: "Azúcar 1kg", prob: 0.2 },
+    ],
+    habitos_servicios: {
+      AGUA: [1.5, 3.2],
+      LUZ: [1, 2.2],
+      GAS: [0.4, 1.1],
+    },
+  },
+  {
+    nombre: "Carlos Ruminott",
+    telefono: "+5491166667777",
+    arquetipo: "estudiante",
+    habitos_despensa: [
+      { item: "Leche Entera 1L", prob: 0.25 },
+      { item: "Arroz 1kg", prob: 0.3 },
+      { item: "Café Molido 500g", prob: 0.4 },
+      { item: "Jabón para Ropa 3L", prob: 0.1 },
+      { item: "Aceite de Girasol 1.5L", prob: 0.15 },
+      { item: "Papel Higiénico 6u", prob: 0.25 },
+      { item: "Yerba Mate 1kg", prob: 0.55 },
+      { item: "Pan Lactal", prob: 0.25 },
+      { item: "Huevos (docena)", prob: 0.15 },
+      { item: "Detergente para Platos", prob: 0.1 },
+      { item: "Shampoo", prob: 0.15 },
+      { item: "Azúcar 1kg", prob: 0.15 },
+    ],
+    habitos_servicios: {
+      AGUA: [1, 2.3],
+      LUZ: [0.6, 1.6],
+      GAS: [0.2, 0.7],
+    },
+  },
+  {
+    nombre: "Juan Cruz Olivera",
+    telefono: "+5491177778888",
+    arquetipo: "viajante_frecuente",
+    habitos_despensa: [
+      { item: "Leche Entera 1L", prob: 0.15 },
+      { item: "Arroz 1kg", prob: 0.15 },
+      { item: "Café Molido 500g", prob: 0.5 },
+      { item: "Jabón para Ropa 3L", prob: 0.08 },
+      { item: "Aceite de Girasol 1.5L", prob: 0.1 },
+      { item: "Papel Higiénico 6u", prob: 0.15 },
+      { item: "Yerba Mate 1kg", prob: 0.2 },
+      { item: "Pan Lactal", prob: 0.1 },
+      { item: "Huevos (docena)", prob: 0.08 },
+      { item: "Detergente para Platos", prob: 0.08 },
+      { item: "Shampoo", prob: 0.1 },
+      { item: "Azúcar 1kg", prob: 0.1 },
+    ],
+    habitos_servicios: {
+      AGUA: [0.8, 2],
+      LUZ: [0.4, 1.3],
+      GAS: [0.15, 0.5],
     },
   },
 ];

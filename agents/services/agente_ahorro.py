@@ -37,7 +37,7 @@ from core.models import (
 )
 
 from ..models import DecisionLog
-from .agente_mantenimiento import UMBRAL_DEGRADACION, calcular_degradacion
+from .agente_mantenimiento import calcular_degradacion
 from .llm import pedir_decision_json
 
 DIAS_DEL_MES = 30
@@ -303,39 +303,37 @@ def _proyectar_servicios(dias_restantes: int) -> tuple[Decimal, dict]:
 def _proyectar_mantenimiento(
     dias_restantes: int, estado: EstadoSimulacion
 ) -> tuple[Decimal, list]:
-    """Dispositivos que van a cruzar el umbral critico antes de fin de mes. Se
-    reusa calcular_degradacion con una fecha futura: si para entonces supera el
-    umbral, el Agente de Mantenimiento le va a agendar un service.
+    """Dispositivos a los que les va a tocar un reemplazo o un service rutinario
+    antes de fin de mes. Se reusa agente_mantenimiento.determinar_accion con una
+    fecha futura: si para entonces le toca algo, ese es el gasto proyectado (el
+    costo depende de si es reemplazo o service rutinario, ver
+    agente_mantenimiento.py).
     """
-    from .orquestador import COSTO_ESTIMADO_SERVICE
+    from .agente_mantenimiento import ACCION_REEMPLAZO, determinar_accion
 
     fecha_futura = estado.fecha_actual + timedelta(days=dias_restantes)
-    ya_atendidos = {
-        EstadoDispositivo.REQUIERE_SERVICE,
-        EstadoDispositivo.EN_MANTENIMIENTO,
-        EstadoDispositivo.WAITING_HUMAN_APPROVAL,
-        EstadoDispositivo.FUERA_DE_SERVICIO,
-    }
     total = Decimal("0")
     detalle = []
     dispositivos = Dispositivo.objects.filter(gustos=False).exclude(
-        estado_actual__in=ya_atendidos
+        estado_actual=EstadoDispositivo.FUERA_DE_SERVICIO
     )
     for dispositivo in dispositivos:
-        degradacion_futura = calcular_degradacion(dispositivo, fecha_futura)
-        if degradacion_futura >= UMBRAL_DEGRADACION:
-            total += COSTO_ESTIMADO_SERVICE
-            detalle.append(
-                {
-                    "dispositivo": dispositivo.nombre,
-                    "prioridad": dispositivo.prioridad,
-                    "degradacion_hoy": calcular_degradacion(
-                        dispositivo, estado.fecha_actual
-                    ),
-                    "degradacion_fin_de_mes": degradacion_futura,
-                    "costo_service": str(COSTO_ESTIMADO_SERVICE),
-                }
-            )
+        accion_futura = determinar_accion(dispositivo, fecha_futura)
+        if not accion_futura:
+            continue
+        es_reemplazo = accion_futura == ACCION_REEMPLAZO
+        costo = dispositivo.costo_reemplazo if es_reemplazo else dispositivo.costo_service
+        total += costo
+        detalle.append(
+            {
+                "dispositivo": dispositivo.nombre,
+                "prioridad": dispositivo.prioridad,
+                "accion": accion_futura,
+                "degradacion_hoy": calcular_degradacion(dispositivo, estado.fecha_actual),
+                "degradacion_fin_de_mes": calcular_degradacion(dispositivo, fecha_futura),
+                "costo": str(costo),
+            }
+        )
     return total, detalle
 
 
@@ -434,7 +432,17 @@ def _numero(valor, minimo=None, maximo=None) -> Decimal | None:
     return n
 
 
-def _sanear_parametros(extraccion: dict) -> dict:
+# Fraccion del costo de reemplazo que se estima como costo de un service
+# rutinario, y fraccion de la vida util que se estima como intervalo entre
+# services -- calculados en codigo, mismo criterio que el resto de este modulo
+# (ver el comentario grande sobre MODELO_VEREDICTO): al LLM no se le pide que
+# invente montos ni plazos de mantenimiento.
+FRACCION_COSTO_SERVICE = Decimal("0.1")
+FRACCION_DIAS_ENTRE_SERVICE = 4
+DIAS_ENTRE_SERVICE_MIN = 30
+
+
+def _sanear_parametros(extraccion: dict, precio: Decimal | None = None) -> dict:
     """Acota lo que estimo el LLM. Es lo que separa "la IA estima" de "la IA decide
     cuanto gasta la casa": una vida util de 3 dias programaria un service inmediato
     de $5.000, y un consumo diario negativo reventaria avanzar_dia().
@@ -443,16 +451,34 @@ def _sanear_parametros(extraccion: dict) -> dict:
     vida_util = _numero(
         extraccion.get("vida_util_dias"), VIDA_UTIL_MIN_DIAS, VIDA_UTIL_MAX_DIAS
     )
-    return {
+    vida_util_dias = None if es_gusto else int(vida_util or VIDA_UTIL_FALLBACK_DIAS)
+
+    resultado = {
         "es_gusto": es_gusto,
         "cantidad": _numero(extraccion.get("cantidad"), 0) or Decimal("1"),
         "unidad_medida": (extraccion.get("unidad_medida") or "unidades")[:20],
         # Un gusto va sin vida util (la base lo permite solo en ese caso). Un bien de
         # uso siempre tiene que tener una: si el LLM no la dio, cae al fallback.
-        "vida_util_dias": None if es_gusto else int(vida_util or VIDA_UTIL_FALLBACK_DIAS),
+        "vida_util_dias": vida_util_dias,
         "stock_minimo": None if es_gusto else (_numero(extraccion.get("stock_minimo"), 0) or Decimal("0")),
         "consumo_promedio_diario": _numero(extraccion.get("consumo_promedio_diario"), 0) or Decimal("0"),
+        "dias_entre_service": None,
+        "costo_service": None,
+        "costo_reemplazo": None,
     }
+
+    # Un bien de uso (es_gusto=False) entra al ciclo de mantenimiento y la base
+    # exige estos 3 campos (ver CHECK en sql/agente_mantenimiento.sql). El
+    # precio que se acaba de pagar es la mejor referencia real disponible para
+    # costo_reemplazo -- comprar OTRO igual va a costar mas o menos lo mismo.
+    if not es_gusto and vida_util_dias is not None and precio is not None:
+        resultado["dias_entre_service"] = max(
+            DIAS_ENTRE_SERVICE_MIN, vida_util_dias // FRACCION_DIAS_ENTRE_SERVICE
+        )
+        resultado["costo_reemplazo"] = precio
+        resultado["costo_service"] = (precio * FRACCION_COSTO_SERVICE).quantize(Decimal("0.01"))
+
+    return resultado
 
 
 def _clasificar_situacion(precio: Decimal, contexto: dict) -> str:
@@ -656,5 +682,5 @@ def evaluar(consulta: str, contexto: dict | None = None) -> dict:
         "justificacion_tecnica": justificacion,
         # Parametros operativos estimados por el LLM, ya saneados. Solo se usan si
         # la compra se aprueba y hay que crear la fila (ver _dar_de_alta_compra).
-        "parametros": _sanear_parametros(extraccion),
+        "parametros": _sanear_parametros(extraccion, precio),
     }
