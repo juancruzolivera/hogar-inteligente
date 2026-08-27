@@ -1,9 +1,9 @@
 # Workflows de n8n
 
-no Tres workflows independientes. Los dos primeros **simulan el paso del tiempo** (Schedule
+Cuatro workflows independientes. Los dos primeros **simulan el paso del tiempo** (Schedule
 Trigger, 4 nodos en cadena: **Code (generador determinístico) → HTTP Request (evento
-inesperado, IA) → Code (combinar) → HTTP Request (POST a Django)**). El tercero es
-distinto: **reacciona a una persona**, no al reloj.
+inesperado, IA) → Code (combinar) → HTTP Request (POST a Django)**). Los otros dos son
+distintos: uno **reacciona a una persona** y el otro **reacciona a Django**, no al reloj.
 
 - **El Pulso** — cada 1 minuto = 1 día simulado. Simula consumo diario de despensa/servicios.
 - **Cierre de Mes** — cada 30 minutos = 30 días simulados = 1 mes. Simula los ingresos de cada
@@ -12,6 +12,9 @@ distinto: **reacciona a una persona**, no al reloj.
   el Agente de Ahorro le responde en el mismo chat. Solo 3 nodos y **sin nodo Code**: no hace
   falta generar nada ni llamar a OpenAI desde n8n, porque todo el razonamiento (y las dos
   llamadas al LLM) vive en Django.
+- **Decisiones** — Webhook Trigger. Django le avisa por Telegram al hogar cada decisión que
+  toman el Agente de Despensa y el Agente de Mantenimiento (reposiciones, services agendados y
+  rechazos por falta de fondos). 2 nodos: webhook → Telegram.
 
 Van por separado a propósito: el trigger de ingresos no depende del `dia_numero` real de la
 simulación, así que puede desincronizarse si el Pulso se pausa o se reintenta — tenerlo en
@@ -36,8 +39,8 @@ gente), hay que actualizar el `telefono` en los dos archivos para que sigan matc
 
 ## Importar
 
-1. En n8n: Workflows > Import from File > `workflow_pulso.json`, `workflow_ingresos.json` y
-   `workflow_consulta.json`.
+1. En n8n: Workflows > Import from File > `workflow_pulso.json`, `workflow_ingresos.json`,
+   `workflow_consulta.json` y `workflow_decisiones.json`.
 2. En cada uno, abrir el primer nodo Code ("Generar consumo simulado" / "Generar ingresos del
    mes") y reemplazar el `jsCode` de ejemplo por el contenido completo de
    [`generador_pulso.js`](generador_pulso.js) / [`generador_ingresos.js`](generador_ingresos.js)
@@ -56,7 +59,10 @@ gente), hay que actualizar el `telefono` en los dos archivos para que sigan matc
 6. Solo para **Consulta de Compra**: abrir los nodos `Mensaje de Telegram` y `Responder en el
    chat` y elegir la credencial de Telegram (la misma en los dos). Los pasos 2 y 3 no aplican
    a este workflow, porque no tiene nodos Code.
-7. Activar los tres workflows.
+7. Solo para **Decisiones**: elegir la misma credencial de Telegram en el nodo `Mandar al chat`,
+   copiar la Production URL del nodo webhook y pegarla en `N8N_TELEGRAM_WEBHOOK_URL` del `.env`
+   de Django. Los pasos 2, 3 y 5 no aplican (no tiene nodos Code ni HTTP Request).
+8. Activar los cuatro workflows.
 
 ## Consulta de Compra — el único que responde a una persona
 
@@ -83,6 +89,50 @@ Cosas a tener en cuenta al armarlo:
   "hola" termina contestado con el pedido de que aclare el precio. Si molesta, se resuelve
   agregando un nodo IF antes del HTTP Request. Un mensaje sin texto (una foto, un sticker) se
   manda como `(sin texto)` y cae por el mismo camino, así que no rompe la ejecución.
+
+## Decisiones — el único que lo dispara Django
+
+```
+POST (webhook de n8n) ──► Mandar al chat
+```
+
+Django manda `{"mensaje": "<texto ya armado>", "chat_id": <telegram_id>}` y n8n solo lo
+reenvía: **el texto no se arma en n8n**, se arma en
+[`agents/services/notificaciones.py`](../agents/services/notificaciones.py) leyendo la fila que
+quedó en `decision_log`. Así el mensaje del chat y el registro de la base no pueden contar
+cosas distintas, y una decisión vieja se puede reenviar tal cual sin volver a llamar al LLM ni
+volver a mover plata.
+
+Un mensaje sale así:
+
+```
+🛒 Agente de Despensa — Reposicion de stock
+Producto: Leche Entera 1L (2L)
+Categoria: Despensa
+
+Con 0.8L en stock y un consumo de 0.5L por día, repongo 2L para dejar margen de una semana
+sobre el mínimo de 1L; el saldo de la categoría ($18.400) lo cubre sin problema.
+
+Decision #142 · dia simulado 14
+```
+
+Cosas a tener en cuenta:
+
+- **Un envío por residente.** Los destinatarios salen de la tabla `residente`: los que tengan
+  `telegram_id` cargado y `nivel_permiso` ADMIN o RESIDENTE (los INVITADO quedan afuera, no
+  tienen por qué ver en qué gasta la casa). Si **ningún** residente tiene `telegram_id`, Django
+  manda el mensaje sin `chat_id` y loguea un warning: en ese caso hay que hardcodear el `chatId`
+  en el nodo `Mandar al chat`, porque la expresión `{{ $json.body.chat_id }}` queda vacía y el
+  nodo falla.
+- **Se manda texto plano, sin Markdown, a propósito.** La justificación la redacta un LLM y un
+  `*` o `_` sin cerrar hace que la API de Telegram rechace el mensaje completo con 400. No
+  activar `parse_mode` en el nodo.
+- **El aviso por WhatsApp sigue existiendo.** Telegram se sumó, no reemplazó nada: las mismas
+  dos acciones siguen avisando también por el workflow de Comunicaciones.
+- **Si el webhook está caído o sin configurar, no pasa nada grave**: Django loguea y sigue. La
+  decisión ya está guardada, así que después se puede reenviar con
+  `python manage.py enviar_decisiones_telegram --cantidad 5`
+  (`--dry-run` muestra el texto sin mandar nada, `--id N` manda una puntual).
 
 ## El paso de IA — "Evento inesperado"
 

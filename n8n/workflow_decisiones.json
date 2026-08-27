@@ -1,0 +1,59 @@
+{
+  "name": "Decisiones - Hogar Inteligente",
+  "nodes": [
+    {
+      "id": "webhook-decisiones",
+      "name": "Decision de un agente",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ],
+      "webhookId": "decisiones-hogar",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "decisiones",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "enviar-telegram",
+      "name": "Mandar al chat",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        520,
+        300
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.body.chat_id }}",
+        "text": "={{ $json.body.mensaje }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Decision de un agente": {
+      "main": [
+        [
+          {
+            "node": "Mandar al chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

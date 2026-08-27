@@ -19,7 +19,13 @@ from core.services.ingresos import cerrar_mes
 from core.services.simulacion import avanzar_dia
 from integrations import services as n8n
 
-from . import agente_ahorro, agente_consumo, agente_despensa, agente_mantenimiento
+from . import (
+    agente_ahorro,
+    agente_consumo,
+    agente_despensa,
+    agente_mantenimiento,
+    notificaciones,
+)
 from ..models import AgenteEnum, DecisionLog
 
 CATEGORIA_MANTENIMIENTO = "Mantenimiento"
@@ -92,14 +98,16 @@ def _procesar_despensa(dia_numero: int) -> list[DecisionLog]:
                 else f"es esencial pero financiarlo superaria el limite de deuda del hogar "
                      f"(${LIMITE_DEUDA})"
             )
-            logs.append(_log(
+            log = _log(
                 AgenteEnum.AGENTE_DESPENSA,
                 "SOLICITUD_RECHAZADA_SIN_FONDOS",
                 f"'{item.nombre}' {motivo}.",
                 {"item": item.nombre, "dia_simulado": dia_numero},
                 item_afectado=item,
                 presupuesto_afectado=presupuesto,
-            ))
+            )
+            logs.append(log)
+            notificaciones.notificar_decision(log)
             n8n.enviar_whatsapp(f"⚠️ No se pudo reponer '{item.nombre}': {motivo}.")
             continue
 
@@ -111,14 +119,16 @@ def _procesar_despensa(dia_numero: int) -> list[DecisionLog]:
             item.stock_actual += Decimal(str(cantidad_reponer))
             item.save(update_fields=["stock_actual", "updated_at"])
 
-        logs.append(_log(
+        log = _log(
             AgenteEnum.AGENTE_DESPENSA,
             "AGREGAR_A_LISTA_COMPRAS",
             decision["justificacion_tecnica"],
             {"item": item.nombre, "cantidad_sugerida": cantidad, "dia_simulado": dia_numero},
             item_afectado=item,
             presupuesto_afectado=presupuesto,
-        ))
+        )
+        logs.append(log)
+        notificaciones.notificar_decision(log)
         n8n.agregar_a_lista_compras(item.nombre, "agregar", cantidad)
         n8n.enviar_whatsapp(f"🛒 Se agrego '{item.nombre}' ({cantidad}) a la lista de compras.")
     return logs
@@ -258,14 +268,16 @@ def _procesar_mantenimiento(dia_numero: int) -> list[DecisionLog]:
                 if not es_esencial
                 else f"es esencial pero financiarlo superaria el limite de deuda del hogar (${LIMITE_DEUDA})"
             )
-            logs.append(_log(
+            log = _log(
                 AgenteEnum.AGENTE_MANTENIMIENTO,
                 "SOLICITUD_RECHAZADA_SIN_FONDOS",
                 f"Service de '{dispositivo.nombre}' rechazado: {motivo}.",
                 {"dispositivo": dispositivo.nombre, "dia_simulado": dia_numero},
                 dispositivo_afectado=dispositivo,
                 presupuesto_afectado=presupuesto,
-            ))
+            )
+            logs.append(log)
+            notificaciones.notificar_decision(log)
             n8n.enviar_whatsapp(f"⚠️ No se pudo agendar el service de '{dispositivo.nombre}': {motivo}.")
             continue
 
@@ -276,14 +288,16 @@ def _procesar_mantenimiento(dia_numero: int) -> list[DecisionLog]:
             presupuesto.monto_gastado += COSTO_ESTIMADO_SERVICE
             presupuesto.save(update_fields=["monto_gastado", "updated_at"])
 
-        logs.append(_log(
+        log = _log(
             AgenteEnum.AGENTE_MANTENIMIENTO,
             "AGENDAR_SERVICE",
             decision["justificacion_tecnica"],
             {"dispositivo": dispositivo.nombre, "dia_simulado": dia_numero},
             dispositivo_afectado=dispositivo,
             presupuesto_afectado=presupuesto,
-        ))
+        )
+        logs.append(log)
+        notificaciones.notificar_decision(log)
         fecha = (timezone.localdate() + timedelta(days=2)).isoformat()
         n8n.agendar_evento(dispositivo.nombre, fecha, "Service de mantenimiento")
         n8n.enviar_whatsapp(f"🔧 Se agendo un service para '{dispositivo.nombre}'.")

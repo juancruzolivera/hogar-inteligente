@@ -46,3 +46,21 @@ def agendar_evento(dispositivo: str, fecha: str, tarea: str) -> bool:
     """Workflow 'Agenda': programa el evento tecnico en Google Calendar."""
     payload = {"dispositivo": dispositivo, "fecha": fecha, "tarea": tarea}
     return _post("N8N_CALENDAR_WEBHOOK_URL", payload, "calendar")
+
+
+def enviar_telegram(mensaje: str, chat_id=None) -> bool:
+    """Workflow 'Decisiones': texto plano hacia el chat de Telegram de un residente.
+
+    `chat_id` es el `telegram_id` del destinatario (columna `residente.telegram_id`,
+    el mismo dato que ya usa /api/consulta/ para identificar quien pregunta). Si va
+    en None, el workflow de n8n manda al chat que tenga configurado a mano en el
+    nodo de Telegram.
+
+    Se manda texto plano a proposito (sin Markdown): la justificacion la redacta un
+    LLM y un asterisco o guion bajo sin cerrar hace que Telegram rechace el mensaje
+    entero con 400.
+    """
+    payload = {"mensaje": mensaje}
+    if chat_id:
+        payload["chat_id"] = chat_id
+    return _post("N8N_TELEGRAM_WEBHOOK_URL", payload, "telegram")
