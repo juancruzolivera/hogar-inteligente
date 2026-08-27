@@ -204,6 +204,10 @@ Telegram. En espanol, natural, como se lo dirias a alguien de la casa. Reglas de
 - NUNCA uses "no hay ahorros acumulados" como motivo para frenar. Un ahorro en cero no es un
   problema: puede ser que todavia no cerro ningun mes y la plata este en el saldo actual.
 - Nunca pidas confirmacion ni le devuelvas la eleccion ("si estas de acuerdo", "vos decidis").
+- NO escribas montos, cifras ni porcentajes. Al final de tu texto el sistema agrega el
+  detalle de la plata (cuanto queda en el mes, que gastos faltan cubrir) ya calculado. Si
+  vos tambien tiras numeros se duplican o, peor, se contradicen con los reales. Vos hablas
+  de la decision; de las cuentas se encarga el codigo.
 
 Respondes SIEMPRE con un JSON de esta forma exacta, sin texto adicional:
 {"fuerza_argumento": "ninguno" o "debil" o "solido",
@@ -507,6 +511,67 @@ def _decidir_resultado(
     return COMPRA_APROBADA
 
 
+def _pesos(monto: Decimal) -> str:
+    """Monto listo para mostrar: redondeado al peso y con punto de miles ($1.850.000).
+    Se espera un valor no negativo -- el signo lo redacta quien llama, que sabe si es
+    plata que queda o un rojo.
+    """
+    return f"${int(monto.quantize(Decimal('1'))):,}".replace(",", ".")
+
+
+def _enumerar(partes: list[str]) -> str:
+    """["a", "b", "c"] -> "a, b y c"."""
+    if len(partes) == 1:
+        return partes[0]
+    return f"{', '.join(partes[:-1])} y {partes[-1]}"
+
+
+def _resumen_economico(resultado: str, precio: Decimal, contexto: dict) -> str:
+    """Cierre informativo que se le suma al mensaje del residente.
+
+    Lo arma el codigo y no el LLM por la misma razon que _clasificar_situacion (ver el
+    docstring del modulo): son cuentas, y el modelo las hace mal. Le llegan al residente
+    ya resueltas y formateadas; el LLM solo puso el criterio.
+    """
+    margen_libre = Decimal(contexto["margen_libre"])
+
+    if resultado == COMPRA_APROBADA:
+        # Lo que queda despues de pagar esta compra Y de cubrir todo lo que falta del
+        # mes: margen_libre ya viene neto de los gastos proyectados.
+        restante = margen_libre - precio
+        if restante < 0:
+            return f"Ojo que con esto el mes queda en rojo por {_pesos(-restante)}."
+        return f"Te quedan {_pesos(restante)} libres para lo que resta del mes."
+
+    if resultado == COMPRA_RECHAZADA:
+        # Los rubros en cero no se nombran: un mes sin services por vencer no tiene
+        # por que aparecer como "$0 de un posible service".
+        rubros = (
+            (Decimal(contexto["gasto_proyectado_servicios"]), "de servicios"),
+            (Decimal(contexto["gasto_proyectado_despensa"]), "de despensa"),
+            (Decimal(contexto["gasto_proyectado_mantenimiento"]), "de un posible service"),
+        )
+        pendientes = [f"{_pesos(m)} {etiqueta}" for m, etiqueta in rubros if m > 0]
+
+        # Sin nada proyectado el disponible y el margen son el mismo numero, asi que
+        # se dice una sola vez (pasa al arranque de la simulacion, cuando todavia no
+        # hay lecturas de consumo con las que proyectar la factura).
+        if not pendientes:
+            if margen_libre < 0:
+                return f"El mes ya viene en rojo por {_pesos(-margen_libre)}."
+            return f"Te quedan {_pesos(margen_libre)} para lo que resta del mes."
+
+        texto = (
+            f"Hoy hay {_pesos(Decimal(contexto['disponible_total']))}, pero hasta fin "
+            f"de mes falta cubrir {_enumerar(pendientes)}"
+        )
+        if margen_libre < 0:
+            return f"{texto}. Asi el mes quedaría en rojo por {_pesos(-margen_libre)}."
+        return f"{texto}. Te quedarian {_pesos(margen_libre)} libres."
+
+    return ""
+
+
 def evaluar(consulta: str, contexto: dict | None = None) -> dict:
     """Veredicto sobre la compra que consulto el residente.
 
@@ -575,6 +640,12 @@ def evaluar(consulta: str, contexto: dict | None = None) -> dict:
         situacion, porcentaje_margen, veredicto, extraccion.get("tipo")
     )
 
+    # El criterio lo redacto el LLM; las cifras las pone el codigo y van al final.
+    justificacion = (veredicto.get("justificacion_tecnica") or "").strip()
+    resumen = _resumen_economico(resultado, precio, contexto)
+    if resumen:
+        justificacion = f"{justificacion} {resumen}".strip()
+
     return {
         "resultado": resultado,
         "producto": extraccion.get("producto"),
@@ -582,7 +653,7 @@ def evaluar(consulta: str, contexto: dict | None = None) -> dict:
         "tipo": extraccion.get("tipo"),
         "es_gusto": bool(extraccion.get("es_gusto")),
         "situacion": situacion,
-        "justificacion_tecnica": veredicto.get("justificacion_tecnica"),
+        "justificacion_tecnica": justificacion,
         # Parametros operativos estimados por el LLM, ya saneados. Solo se usan si
         # la compra se aprueba y hay que crear la fila (ver _dar_de_alta_compra).
         "parametros": _sanear_parametros(extraccion),
