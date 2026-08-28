@@ -348,22 +348,28 @@ Respondes SIEMPRE con un JSON de esta forma exacta, sin texto adicional: {"hay_e
 // con amigos y compra de cafe", 0 eventos de Ocio en 10 intentos). Forzando
 // hasta el escenario especifico, el LLM solo redacta texto y numeros dentro de
 // un molde ya armado -- mucho mas confiable.
-const PROB_EVENTO_INESPERADO = 0.2; // ~1 de cada 5 pulsos
+const PROB_EVENTO_INESPERADO = 0.55; // ~1 de cada 3 pulsos
 const DETALLE_EVENTO = {
   sociales: ["visita sorpresa de un amigo", "junta de amigos en casa", "asado familiar", "alguien se quedo a dormir", "festejo de cumpleanos"],
   compras_puntuales: ["antojo fuera de la rutina", "se termino antes de lo esperado y hay que reponerlo urgente", "aprovecharon una oferta y compraron de mas"],
   imprevistos: ["se rompio o derramo un producto y hay que reponerlo", "una visita medica genero gasto en articulos del hogar", "un electrodomestico personal fallo y hubo que reponer algo"],
   ocio: [
-    { escenario: "salida al cine", rango_monto: [2000, 4500] },
-    { escenario: "salida a comer afuera (bar o restaurante)", rango_monto: [5000, 15000] },
-    { escenario: "suscripcion nueva de streaming/entretenimiento", rango_monto: [1500, 3500] },
-    { escenario: "evento o salida de fin de semana", rango_monto: [8000, 20000] },
+    { escenario: "salida al cine", rango_monto: [9000, 21000] },
+    { escenario: "salida a comer afuera (bar o restaurante)", rango_monto: [24000, 66000] },
+    { escenario: "suscripcion nueva de streaming/entretenimiento", rango_monto: [6000, 15000] },
+    { escenario: "evento o salida de fin de semana", rango_monto: [36000, 90000] },
   ],
 };
 
+// Pool con "ocio" repetido: sin esto, las 4 categorias salen 1/4 cada una y el
+// gasto de ocio (el unico que resta plata de verdad, no solo consumo fisico)
+// tarda demasiado en aparecer. Con el pool de abajo, ocio sale ~40% de las
+// veces que hay evento, en vez de 25%.
+const CATEGORIAS_POOL = ["sociales", "compras_puntuales", "imprevistos", "ocio", "ocio"];
+
 const hayEventoForzado = Math.random() < PROB_EVENTO_INESPERADO;
 const categoriaForzada = hayEventoForzado
-  ? Object.keys(DETALLE_EVENTO)[Math.floor(Math.random() * Object.keys(DETALLE_EVENTO).length)]
+  ? CATEGORIAS_POOL[Math.floor(Math.random() * CATEGORIAS_POOL.length)]
   : null;
 const residenteForzado = hayEventoForzado
   ? RESIDENTES[Math.floor(Math.random() * RESIDENTES.length)]

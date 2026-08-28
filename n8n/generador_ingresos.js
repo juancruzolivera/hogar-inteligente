@@ -14,13 +14,13 @@
 // en el body que arma este nodo, Django usa el fallback `ingreso_mensual` de
 // su fila en la base (hoy 0 para todos: sin body, no entra plata).
 const RESIDENTES = [
-  { nombre: "Gonzalo Lopez", telefono: "+5491112345678", ingreso_base: 1200000, variacion_pct: 0.1 },
-  { nombre: "Co-residente", telefono: "+5491122223333", ingreso_base: 350000, variacion_pct: 0.1 },
+  { nombre: "Gonzalo Lopez", telefono: "+5491112345678", ingreso_base: 900000, variacion_pct: 0.1 },
+  { nombre: "Co-residente", telefono: "+5491122223333", ingreso_base: 500000, variacion_pct: 0.1 },
   { nombre: "Visita Frecuente", telefono: "+5491144445555", ingreso_base: 0, variacion_pct: 0 },
-  { nombre: "Estefania Arrieta", telefono: "987546321", ingreso_base: 1300000, variacion_pct: 0.1 },
-  { nombre: "Julieta Ruppert", telefono: "+5491155556666", ingreso_base: 900000, variacion_pct: 0.1 },
+  { nombre: "Estefania Arrieta", telefono: "987546321", ingreso_base: 1100000, variacion_pct: 0.1 },
+  { nombre: "Julieta Ruppert", telefono: "+5491155556666", ingreso_base: 700000, variacion_pct: 0.1 },
   { nombre: "Carlos Ruminott", telefono: "+5491166667777", ingreso_base: 450000, variacion_pct: 0.1 },
-  { nombre: "Juan Cruz Olivera", telefono: "+5491177778888", ingreso_base: 1500000, variacion_pct: 0.1 },
+  { nombre: "Juan Cruz Olivera", telefono: "+5491177778888", ingreso_base: 1000000, variacion_pct: 0.1 },
 ];
 
 // ============================================================================

@@ -34,9 +34,9 @@ PRIORIDAD_BIEN_DE_USO = 3
 # diario (litros/kWh/m3) en una factura real. Calibrados para que un mes de
 # consumo baseline ronde el limite_mensual actual de la categoria Servicios.
 PRECIO_SERVICIOS = {
-    TipoServicio.AGUA: Decimal("100"),
-    TipoServicio.LUZ: Decimal("250"),
-    TipoServicio.GAS: Decimal("100"),
+    TipoServicio.AGUA: Decimal("1650"),
+    TipoServicio.LUZ: Decimal("2850"),
+    TipoServicio.GAS: Decimal("1950"),
 }
 
 
